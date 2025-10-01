@@ -17,9 +17,10 @@ bun install @upstash/realtime @upstash/redis zod
 
 ## Quickstart
 
-### 1. Configure Redis
+### 1. Configure Upstash Redis
 
 ```ts
+// lib/redis.ts
 import { Redis } from "@upstash/redis"
 
 export const redis = new Redis({
@@ -34,27 +35,27 @@ export const redis = new Redis({
 Define the structure of realtime events in your app.
 
 ```ts
-import { Realtime } from "@upstash/realtime"
+// lib/realtime.ts
+import { Realtime, InferRealtimeEvents } from "@upstash/realtime"
 import { redis } from "./redis"
 import z from "zod"
 
-// 👇 possible events we can trigger and the data they need
-const schema = z.object({
+const schema = {
   notification: z.object({
-    message: z.string(),
+    alert: z.string(),
   }),
-})
+}
 
 export const realtime = new Realtime({ schema, redis })
-export type RealtimeEvents = z.infer<typeof schema>
+export type RealtimeEvents = InferRealtimeEvents<typeof realtime>
 ```
 
-### 3. Create SSE endpoint
+### 3. Create realtime API endpoint
 
 Create your realtime endpoint under `/api/realtime/route.ts`. It's important that your route matches this path exactly.
 
-```ts 
-// app/api/realtime/route.ts
+```ts
+// api/realtime/route.ts
 import { handle } from "@upstash/realtime"
 import { realtime } from "@/lib"
 
@@ -64,9 +65,7 @@ export const GET = handle({ realtime })
 ### 4. Emit events
 
 ```ts
-await realtime.notification.emit({
-  message: "Hello world",
-})
+await realtime.notification.alert.emit("Hello world")
 ```
 
 ### 5. Subscribe to events
@@ -74,14 +73,15 @@ await realtime.notification.emit({
 ```tsx
 "use client"
 
-import { useRealtime } from "@upstash/realtime"
-import { RealtimeEvents } from "@/lib"
+import { useRealtime } from "@upstash/realtime/client"
+import type { RealtimeEvents } from "@/lib/realtime"
 
 export default function MyComponent() {
   useRealtime<RealtimeEvents>({
     events: {
-      notification: (data) => {
-        console.log(data.message)
+      notification: {
+        // 👇 100% type-safe
+        alert: (data) => console.log(data),
       },
     },
   })
@@ -102,34 +102,43 @@ Serverless functions have execution time limits. The client automatically reconn
 export const realtime = new Realtime({
   schema,
   redis,
-  maxDurationSecs: 60, // Vercel Hobby: 60s, Pro: 500s
+
+  // 👇 Set to - Vercel free plan: 60; Vercel pro plan: 500
+  maxDurationSecs: 60,
 })
 ```
 
 Match this to your API route timeout:
 
 ```ts
-export const maxDuration = 60 // Vercel Hobby: 60s, Pro: 500s
+// api/realtime/route.ts
+
+// 👇 Set to - Vercel free plan: 60; Vercel pro plan: 500
+export const maxDuration = 60
+
 export const GET = handle({ realtime })
 ```
 
-**Vercel Note:** With fluid compute (default), you're only billed for active CPU time, not connection duration.
+**Vercel Note:** With fluid compute (default), you're only billed for active CPU time, not connection duration. This makes Upstash Realtime very cost-efficient.
 
-### Namespaces
+### Channels
 
 Scope events to channels or rooms:
 
 ```ts
-await realtime.namespace("room-123").notification.emit({
-  message: "Hello",
-})
+await realtime.channel("room-123").notification.alert.emit("Hello")
 ```
 
 ```tsx
+import { useRealtime } from "@upstash/realtime/client"
+import type { RealtimeEvents } from "@/lib/realtime"
+
 useRealtime<RealtimeEvents>({
-  namespace: "room-123",
+  channel: "room-123",
   events: {
-    notification: (data) => console.log(data),
+    notification: {
+      alert: (data) => console.log(data),
+    },
   },
 })
 ```
@@ -137,16 +146,59 @@ useRealtime<RealtimeEvents>({
 ### Connection Control
 
 ```tsx
+import { useState } from "react"
+import { useRealtime } from "@upstash/realtime/client"
+import type { RealtimeEvents } from "@/lib/realtime"
+
 const [enabled, setEnabled] = useState(true)
 
-// status: "connecting" | "connected" | "disconnected" | "error"
 const { status } = useRealtime<RealtimeEvents>({
   enabled,
   events: {
-    notification: (data) => console.log(data),
+    notification: {
+      alert: (data) => console.log(data),
+    },
   },
 })
 ```
+
+---
+
+## Advanced
+
+### Middleware Authentication
+
+Protect your realtime endpoints with custom authentication logic.
+
+```ts
+import { realtime } from "@/lib"
+import { handle } from "@upstash/realtime"
+import { currentUser } from "@/auth"
+
+export const GET = handle({
+  realtime,
+  middleware: async ({ request, channel }) => {
+    const user = await currentUser(request)
+
+    if (channel === user.id) {
+      return
+    }
+
+    if (channel !== user.id) {
+      return new Response("Unauthorized", { status: 401 })
+    }
+  },
+})
+```
+
+The middleware function receives:
+
+- `request`: The incoming Request object
+- `channel`: The channel the client is attempting to connect to
+
+Return `undefined` or nothing to allow the connection. Return a `Response` object to block the connection with a custom error.
+
+---
 
 ## License
 

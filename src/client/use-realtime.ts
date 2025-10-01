@@ -1,16 +1,18 @@
 import { useEffect, useRef, useState } from "react"
 
 interface Opts<T> {
-  namespace?: string
+  channel?: string
   enabled?: boolean
   events?: Partial<{
-    [K in keyof T]: (data: T[K]) => void
+    [N in keyof T]: Partial<{
+      [K in keyof T[N]]: (data: T[N][K]) => void
+    }>
   }>
   maxReconnectAttempts?: number
 }
 
-export const useRealtime = <T extends Record<string, unknown>>({
-  namespace = "default",
+export const useRealtime = <T extends Record<string, Record<string, unknown>>>({
+  channel = "default",
   enabled = true,
   events,
   maxReconnectAttempts = 3,
@@ -26,7 +28,7 @@ export const useRealtime = <T extends Record<string, unknown>>({
   const isInitialConnectionRef = useRef<boolean>(true)
   const processedIdsRef = useRef<Set<string>>(new Set())
 
-  const cleanup = () => {
+  const cleanup = (preserveReconnectCount = false) => {
     if (eventSourceRef.current) {
       eventSourceRef.current.close()
       eventSourceRef.current = null
@@ -35,7 +37,9 @@ export const useRealtime = <T extends Record<string, unknown>>({
       clearTimeout(reconnectTimeoutRef.current)
       reconnectTimeoutRef.current = null
     }
-    reconnectAttemptsRef.current = 0
+    if (!preserveReconnectCount) {
+      reconnectAttemptsRef.current = 0
+    }
 
     setStatus("disconnected")
   }
@@ -44,12 +48,12 @@ export const useRealtime = <T extends Record<string, unknown>>({
     reconnect = !Boolean(isInitialConnectionRef.current) || false,
   }: { reconnect?: boolean } = {}) => {
     if (reconnectAttemptsRef.current >= maxReconnectAttempts) {
-      console.error("Max reconnection attempts reached, stopping retries")
+      console.log("Max reconnection attempts reached.")
       setStatus("error")
       return
     }
 
-    cleanup()
+    cleanup(reconnect)
 
     setStatus("connecting")
 
@@ -62,14 +66,13 @@ export const useRealtime = <T extends Record<string, unknown>>({
           : ""
 
       const eventSource = new EventSource(
-        `/api/realtime?namespace=${encodeURIComponent(
-          namespace
+        `/api/realtime?channel=${encodeURIComponent(
+          channel
         )}${reconnectParam}${lastAckParam}`
       )
       eventSourceRef.current = eventSource
 
       eventSource.onopen = () => {
-        console.log("EventSource connection opened")
         reconnectAttemptsRef.current = 0
         setStatus("connected")
         isInitialConnectionRef.current = false
@@ -80,7 +83,6 @@ export const useRealtime = <T extends Record<string, unknown>>({
           const payload = JSON.parse(evt.data)
 
           if (payload.type === "connected") {
-            console.log(`Connected to namespace: ${payload.namespace}`)
             if (payload.cursor && !lastAckRef.current) {
               lastAckRef.current = payload.cursor
             }
@@ -107,24 +109,28 @@ export const useRealtime = <T extends Record<string, unknown>>({
             lastAckRef.current = payload.id
           }
 
-          const event = payload.event as keyof T
+          if (payload.__event_path) {
+            const handler = payload.__event_path.reduce(
+              (acc: any, key: any) => acc?.[key],
+              events
+            )
 
-          if (events?.[event]) {
-            events[event]({ ...payload, event: undefined })
+            handler?.(payload.data)
           }
         } catch (error) {
-          console.error("Error parsing message:", error)
+          console.warn("Error parsing message:", error)
         }
       }
 
-      eventSource.onerror = (error) => {
-        console.error("EventSource error:", error)
+      eventSource.onerror = () => {
+        const readyState = eventSourceRef.current?.readyState
 
-        if (
-          eventSourceRef.current?.readyState === EventSource.CLOSED ||
-          eventSourceRef.current?.readyState === EventSource.CONNECTING
-        ) {
+        if (readyState === EventSource.CONNECTING) {
           return
+        }
+
+        if (readyState === EventSource.CLOSED) {
+          console.log("Connection closed, reconnecting...")
         }
 
         setStatus("disconnected")
@@ -132,21 +138,17 @@ export const useRealtime = <T extends Record<string, unknown>>({
         if (reconnectAttemptsRef.current < maxReconnectAttempts) {
           reconnectAttemptsRef.current++
           console.log(
-            `Attempting reconnect ${reconnectAttemptsRef.current}/${maxReconnectAttempts}`
+            `Reconnecting (${reconnectAttemptsRef.current}/${maxReconnectAttempts})...`
           )
 
           reconnectTimeoutRef.current = setTimeout(() => {
-            if (reconnectAttemptsRef.current < maxReconnectAttempts) {
-              connect({ reconnect: true })
-            }
+            connect({ reconnect: true })
           }, Math.min(1000 * reconnectAttemptsRef.current, 10000))
         } else {
-          console.error("Max reconnection attempts reached")
           setStatus("error")
         }
       }
     } catch (error) {
-      console.error("Connection error:", error)
       setStatus("error")
     }
   }
@@ -160,11 +162,10 @@ export const useRealtime = <T extends Record<string, unknown>>({
       return
     }
 
-    console.log(eventSourceRef.current?.readyState)
     connect()
 
     return cleanup
-  }, [namespace, enabled])
+  }, [channel, enabled])
 
   return { status }
 }
