@@ -36,7 +36,6 @@ export function handle<T extends Opts>(config: {
 
     let subscriber: ReturnType<typeof redis.subscribe>
     let reconnectTimeout: NodeJS.Timeout | undefined
-    let pingInterval: NodeJS.Timeout
     let isClosed = false
 
     const stream = new ReadableStream({
@@ -55,10 +54,6 @@ export function handle<T extends Opts>(config: {
         const elapsedMs = Date.now() - requestStartTime
         const remainingMs = config.realtime._maxDurationSecs * 1000 - elapsedMs
         const streamDurationMs = Math.max(remainingMs - 2000, 1000)
-
-        pingInterval = setInterval(() => {
-          safeEnqueue(json({ type: "ping" }))
-        }, 10_000)
 
         reconnectTimeout = setTimeout(() => {
           safeEnqueue(json({ type: "reconnect" }))
@@ -184,7 +179,6 @@ export function handle<T extends Opts>(config: {
 
       cancel() {
         isClosed = true
-        clearInterval(pingInterval)
         clearTimeout(reconnectTimeout)
 
         if (subscriber) {

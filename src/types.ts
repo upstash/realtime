@@ -1,7 +1,6 @@
 export type SystemEvent =
   | { type: "connected"; channel: string; cursor?: string }
   | { type: "reconnect" }
-  | { type: "ping" }
   | { type: "error"; error: string }
   | { type: "disconnected"; channel: string }
 

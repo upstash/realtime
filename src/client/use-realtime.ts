@@ -98,8 +98,6 @@ export const useRealtime = <T extends Record<string, Record<string, unknown>>>({
               case "reconnect":
                 connect({ reconnect: true })
                 break
-              case "ping":
-                break
               case "error":
                 console.error("Server error:", systemEvent.error)
                 break
