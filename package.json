@@ -1,6 +1,6 @@
 {
   "name": "@upstash/realtime",
-  "version": "0.1.2",
+  "version": "0.1.5",
   "type": "module",
   "license": "MIT",
   "main": "dist/server/index.js",
