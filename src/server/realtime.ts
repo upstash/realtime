@@ -62,14 +62,14 @@ class RealtimeBase<T extends Opts> {
 
             const payload = {
               data: value,
-              event: innerKey,
+              __event_path: [outerKey, innerKey],
             }
 
             const id = await this._redis.xadd(`channel:${channel}`, "*", payload, {
               trim: { type: "MAXLEN", threshold: 100, comparison: "~" },
             })
 
-            await this._redis.publish(`channel:${channel}:event:${outerKey}-${innerKey}`, {
+            await this._redis.publish(`channel:${channel}:event`, {
               data: value,
               __event_path: [outerKey, innerKey],
               __stream_id: id,

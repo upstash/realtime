@@ -1,4 +1,10 @@
 import { useEffect, useRef, useState } from "react"
+import type {
+  ConnectionStatus,
+  RealtimeMessage,
+  SystemEvent,
+  UserEvent,
+} from "../types.js"
 
 interface Opts<T> {
   channel?: string
@@ -17,9 +23,7 @@ export const useRealtime = <T extends Record<string, Record<string, unknown>>>({
   events,
   maxReconnectAttempts = 3,
 }: Opts<T> = {}) => {
-  const [status, setStatus] = useState<
-    "connected" | "disconnected" | "error" | "connecting"
-  >("disconnected")
+  const [status, setStatus] = useState<ConnectionStatus>("disconnected")
 
   const eventSourceRef = useRef<EventSource | null>(null)
   const reconnectTimeoutRef = useRef<NodeJS.Timeout | null>(null)
@@ -80,42 +84,48 @@ export const useRealtime = <T extends Record<string, Record<string, unknown>>>({
 
       eventSource.onmessage = (evt) => {
         try {
-          const payload = JSON.parse(evt.data)
+          const payload: RealtimeMessage = JSON.parse(evt.data)
 
-          if (payload.type === "connected") {
-            if (payload.cursor && !lastAckRef.current) {
-              lastAckRef.current = payload.cursor
+          if ("type" in payload) {
+            const systemEvent = payload as SystemEvent
+
+            switch (systemEvent.type) {
+              case "connected":
+                if (systemEvent.cursor && !lastAckRef.current) {
+                  lastAckRef.current = systemEvent.cursor
+                }
+                break
+              case "reconnect":
+                connect({ reconnect: true })
+                break
+              case "ping":
+                break
+              case "error":
+                console.error("Server error:", systemEvent.error)
+                break
+              case "disconnected":
+                break
             }
             return
           }
 
-          if (payload.type === "reconnect") {
-            console.log("Server requested reconnect, initiating...")
-            connect({ reconnect: true })
-            return
-          }
+          if ("__event_path" in payload && "__stream_id" in payload) {
+            const userEvent = payload as UserEvent
 
-          if (payload.type === "error") {
-            console.error("Server error:", payload.error)
-            return
-          }
-
-          if (payload.id) {
-            if (processedIdsRef.current.has(payload.id)) {
-              console.log("Skipping duplicate message:", payload.id)
+            if (processedIdsRef.current.has(userEvent.__stream_id)) {
+              // skip
               return
             }
-            processedIdsRef.current.add(payload.id)
-            lastAckRef.current = payload.id
-          }
 
-          if (payload.__event_path) {
-            const handler = payload.__event_path.reduce(
+            processedIdsRef.current.add(userEvent.__stream_id)
+            lastAckRef.current = userEvent.__stream_id
+
+            const handler = userEvent.__event_path.reduce(
               (acc: any, key: any) => acc?.[key],
               events
             )
 
-            handler?.(payload.data)
+            handler?.(userEvent.data)
           }
         } catch (error) {
           console.warn("Error parsing message:", error)
