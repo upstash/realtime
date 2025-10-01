@@ -151,7 +151,7 @@ export function handle<T extends Opts>(config: {
             safeEnqueue(json(unsubscribedEvent))
           })
 
-          subscriber.on("message", async (message) => {
+          subscriber.on("message", async ({ message }) => {
             logger.log("message", { message })
 
             let payload: Record<string, unknown>
