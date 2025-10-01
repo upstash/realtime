@@ -2,10 +2,10 @@
 
 The easiest way to add realtime to any Next.js project.
 
-◆ Deployable to Vercel
-◆ 100% type-safe using zod v4
-◆ Automatic connection management w/ delivery guarantee
-◆ Powered by Upstash Redis streams
+- ◆ Deployable to Vercel
+- ◆ 100% type-safe using zod v4
+- ◆ Automatic connection management w/ delivery guarantee
+- ◆ Powered by Upstash Redis streams
 
 ---
 
