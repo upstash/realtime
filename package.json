@@ -1,6 +1,6 @@
 {
   "name": "@upstash/realtime",
-  "version": "0.1.0-canary.3",
+  "version": "0.1.0",
   "type": "module",
   "license": "MIT",
   "main": "dist/index.js",
