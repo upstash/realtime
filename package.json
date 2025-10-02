@@ -1,6 +1,7 @@
 {
   "name": "@upstash/realtime",
-  "version": "0.2.0",
+  "description": "An HTTP-based realtime client powered by Redis Streams.",
+  "version": "0.2.1",
   "type": "module",
   "license": "MIT",
   "main": "dist/server/index.js",
@@ -8,6 +9,16 @@
   "types": "dist/server/index.d.ts",
   "author": "Joscha Neske",
   "access": "public",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/upstash/realtime"
+  },
+  "homepage": "https://github.com/upstash/realtime",
+  "keywords": [
+    "realtime",
+    "serverless",
+    "upstash"
+  ],
   "scripts": {
     "build": "tsup",
     "lint": "tsc"
