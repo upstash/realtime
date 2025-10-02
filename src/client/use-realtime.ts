@@ -17,6 +17,8 @@ interface Opts<T> {
   maxReconnectAttempts?: number
 }
 
+const PING_TIMEOUT_MS = 20_000
+
 export const useRealtime = <T extends Record<string, Record<string, unknown>>>({
   channel = "default",
   enabled = true,
@@ -27,6 +29,7 @@ export const useRealtime = <T extends Record<string, Record<string, unknown>>>({
 
   const eventSourceRef = useRef<EventSource | null>(null)
   const reconnectTimeoutRef = useRef<NodeJS.Timeout | null>(null)
+  const pingTimeoutRef = useRef<NodeJS.Timeout | null>(null)
   const reconnectAttemptsRef = useRef(0)
   const lastAckRef = useRef<string | null>(null)
   const isInitialConnectionRef = useRef<boolean>(true)
@@ -41,11 +44,26 @@ export const useRealtime = <T extends Record<string, Record<string, unknown>>>({
       clearTimeout(reconnectTimeoutRef.current)
       reconnectTimeoutRef.current = null
     }
+    if (pingTimeoutRef.current) {
+      clearTimeout(pingTimeoutRef.current)
+      pingTimeoutRef.current = null
+    }
     if (!preserveReconnectCount) {
       reconnectAttemptsRef.current = 0
     }
 
     setStatus("disconnected")
+  }
+
+  const resetPingTimeout = () => {
+    if (pingTimeoutRef.current) {
+      clearTimeout(pingTimeoutRef.current)
+    }
+
+    pingTimeoutRef.current = setTimeout(() => {
+      console.warn("Realtime connection timed out, reconnecting...")
+      connect({ reconnect: true })
+    }, PING_TIMEOUT_MS)
   }
 
   const connect = ({
@@ -80,11 +98,14 @@ export const useRealtime = <T extends Record<string, Record<string, unknown>>>({
         reconnectAttemptsRef.current = 0
         setStatus("connected")
         isInitialConnectionRef.current = false
+        resetPingTimeout()
       }
 
       eventSource.onmessage = (evt) => {
         try {
           const payload: RealtimeMessage = JSON.parse(evt.data)
+
+          resetPingTimeout()
 
           if ("type" in payload) {
             const systemEvent = payload as SystemEvent
@@ -97,6 +118,8 @@ export const useRealtime = <T extends Record<string, Record<string, unknown>>>({
                 break
               case "reconnect":
                 connect({ reconnect: true })
+                break
+              case "ping":
                 break
               case "error":
                 console.error("Server error:", systemEvent.error)

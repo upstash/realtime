@@ -52,8 +52,8 @@ class RealtimeBase<T extends Opts> {
       handlers[outerKey] = {}
       for (const innerKey of Object.keys(zodObject.shape)) {
         handlers[outerKey][innerKey] = {
-          emit: async (value: any) => {
-            zodObject.shape[innerKey]?.parse(value)
+          emit: async (data: any) => {
+            zodObject.shape[innerKey]?.parse(data)
 
             if (!this._redis) {
               this._logger.warn("No Redis instance provided to Realtime.")
@@ -61,16 +61,22 @@ class RealtimeBase<T extends Opts> {
             }
 
             const payload = {
-              data: value,
+              data,
               __event_path: [outerKey, innerKey],
             }
+
+            this._logger.log(`⬆️  Emitting event:`, {
+              channel,
+              __event_path: [outerKey, innerKey],
+              data,
+            })
 
             const id = await this._redis.xadd(`channel:${channel}`, "*", payload, {
               trim: { type: "MAXLEN", threshold: 100, comparison: "~" },
             })
 
-            await this._redis.publish(`channel:${channel}:event`, {
-              data: value,
+            await this._redis.publish(`channel:${channel}`, {
+              data,
               __event_path: [outerKey, innerKey],
               __stream_id: id,
             })

@@ -36,7 +36,15 @@ export function handle<T extends Opts>(config: {
 
     let subscriber: ReturnType<typeof redis.subscribe>
     let reconnectTimeout: NodeJS.Timeout | undefined
+    let keepaliveInterval: NodeJS.Timeout | undefined
     let isClosed = false
+    let handleAbort: (() => Promise<void>) | undefined
+    let onSubscribe: (() => Promise<void>) | undefined
+    let onError: ((err: Error) => void) | undefined
+    let onUnsubscribe: (() => void) | undefined
+    let onMessage:
+      | (({ message, channel }: { message: unknown; channel: string }) => Promise<void>)
+      | undefined
 
     const stream = new ReadableStream({
       async start(controller) {
@@ -45,7 +53,15 @@ export function handle<T extends Opts>(config: {
           return
         }
 
-        subscriber = redis.subscribe(`channel:${channel}:event`)
+        handleAbort = async () => {
+          if (!isClosed) {
+            await this.cancel?.()
+          }
+        }
+
+        request.signal.addEventListener("abort", handleAbort)
+
+        subscriber = redis.subscribe(`channel:${channel}`)
 
         const safeEnqueue = (data: Uint8Array) => {
           if (!isClosed) controller.enqueue(data)
@@ -55,137 +71,160 @@ export function handle<T extends Opts>(config: {
         const remainingMs = config.realtime._maxDurationSecs * 1000 - elapsedMs
         const streamDurationMs = Math.max(remainingMs - 2000, 1000)
 
-        reconnectTimeout = setTimeout(() => {
+        reconnectTimeout = setTimeout(async () => {
           safeEnqueue(json({ type: "reconnect" }))
           isClosed = true
           controller.close()
-          this.cancel?.()
+          await this.cancel?.()
         }, streamDurationMs)
 
-        const setupSubscription = async () => {
-          subscriber.on("subscribe", async () => {
-            logger.log("Regular subscription established!")
-            try {
-              if (reconnect === "true" && last_ack) {
-                const startId = `(${last_ack}`
-                const missingMessages = await redis.xrange(
-                  `channel:${channel}`,
-                  startId,
-                  "+"
-                )
-
-                const connectedEvent: SystemEvent = {
-                  type: "connected",
-                  channel,
-                }
-
-                safeEnqueue(json(connectedEvent))
-
-                if (Array.from(Object.keys(missingMessages)).length > 0) {
-                  Object.entries(missingMessages).forEach(([__stream_id, value]) => {
-                    if (typeof value === "object" && value !== null) {
-                      const { __event_path, data } = value as Record<string, unknown>
-                      const userEvent: UserEvent = {
-                        data,
-                        __event_path: __event_path as string[],
-                        __stream_id,
-                      }
-                      safeEnqueue(json(userEvent))
-                    }
-                  })
-                }
-              } else {
-                const lastMessage = await redis.xrevrange(
-                  `channel:${channel}`,
-                  "+",
-                  "-",
-                  1
-                )
-
-                const messageEntries = Object.entries(lastMessage)
-                const currentCursor = messageEntries[0]?.[0] ?? "0-0"
-
-                const connectedEvent: SystemEvent = {
-                  type: "connected",
-                  channel,
-                  cursor: currentCursor,
-                }
-
-                safeEnqueue(json(connectedEvent))
-              }
-            } catch (err) {
-              logger.error("Error in subscribe handler:", err)
-              safeEnqueue(
-                json({
-                  type: "error",
-                  error: err instanceof Error ? err.message : "Unknown error",
-                })
+        onSubscribe = async () => {
+          logger.log(`✅ Subscription established:`, { channel })
+          try {
+            if (reconnect === "true" && last_ack) {
+              const startId = `(${last_ack}`
+              const missingMessages = await redis.xrange(
+                `channel:${channel}`,
+                startId,
+                "+"
               )
-            }
-          })
 
-          subscriber.on("error", (err) => {
-            logger.error("Redis subscriber error:", err)
-
-            const errorEvent: SystemEvent = {
-              type: "error",
-              error: err.message,
-            }
-
-            safeEnqueue(json(errorEvent))
-          })
-
-          subscriber.on("unsubscribe", () => {
-            logger.log("Client unsubscribed from channel:", channel)
-
-            const unsubscribedEvent: SystemEvent = {
-              type: "disconnected",
-              channel,
-            }
-
-            safeEnqueue(json(unsubscribedEvent))
-          })
-
-          subscriber.on("message", async ({ message }) => {
-            logger.log("message", { message })
-
-            let payload: Record<string, unknown>
-            if (typeof message === "string") {
-              try {
-                payload = JSON.parse(message)
-              } catch {
-                payload = { data: message }
+              const connectedEvent: SystemEvent = {
+                type: "connected",
+                channel,
               }
-            } else if (typeof message === "object" && message !== null) {
-              payload = message as Record<string, unknown>
+
+              safeEnqueue(json(connectedEvent))
+
+              if (Array.from(Object.keys(missingMessages)).length > 0) {
+                Object.entries(missingMessages).forEach(([__stream_id, value]) => {
+                  if (typeof value === "object" && value !== null) {
+                    const { __event_path, data } = value as Record<string, unknown>
+                    const userEvent: UserEvent = {
+                      data,
+                      __event_path: __event_path as string[],
+                      __stream_id,
+                    }
+                    safeEnqueue(json(userEvent))
+                  }
+                })
+              }
             } else {
+              const lastMessage = await redis.xrevrange(`channel:${channel}`, "+", "-", 1)
+
+              const messageEntries = Object.entries(lastMessage)
+              const currentCursor = messageEntries[0]?.[0] ?? "0-0"
+
+              const connectedEvent: SystemEvent = {
+                type: "connected",
+                channel,
+                cursor: currentCursor,
+              }
+
+              safeEnqueue(json(connectedEvent))
+            }
+          } catch (err) {
+            logger.error("Error in subscribe handler:", err)
+            safeEnqueue(
+              json({
+                type: "error",
+                error: err instanceof Error ? err.message : "Unknown error",
+              })
+            )
+          }
+        }
+
+        onError = (err: Error) => {
+          logger.error("⚠️ Redis subscriber error:", err)
+
+          const errorEvent: SystemEvent = {
+            type: "error",
+            error: err.message,
+          }
+
+          safeEnqueue(json(errorEvent))
+        }
+
+        onUnsubscribe = () => {
+          logger.log("⬅️ Client unsubscribed from channel:", channel)
+
+          const unsubscribedEvent: SystemEvent = {
+            type: "disconnected",
+            channel,
+          }
+
+          safeEnqueue(json(unsubscribedEvent))
+        }
+
+        onMessage = async ({
+          message,
+          channel,
+        }: {
+          message: unknown
+          channel: string
+        }) => {
+          let payload: Record<string, unknown>
+          if (typeof message === "string") {
+            try {
+              payload = JSON.parse(message)
+            } catch {
               payload = { data: message }
             }
+          } else if (typeof message === "object" && message !== null) {
+            payload = message as Record<string, unknown>
+          } else {
+            payload = { data: message }
+          }
 
-            const { __stream_id, __event_path, data } = payload
-
-            const userEvent: UserEvent = {
-              data,
-              __event_path: __event_path as string[],
-              __stream_id: __stream_id as string,
+          if (payload.type === "ping") {
+            const pingEvent: SystemEvent = {
+              type: "ping",
+              timestamp: payload.timestamp as number,
             }
+            safeEnqueue(json(pingEvent))
+            return
+          }
 
-            safeEnqueue(json(userEvent))
-          })
+          const { __stream_id, __event_path, data } = payload
+
+          logger.log("⬇️  Received event:", { channel, __event_path, data })
+
+          const userEvent: UserEvent = {
+            data,
+            __event_path: __event_path as string[],
+            __stream_id: __stream_id as string,
+          }
+
+          safeEnqueue(json(userEvent))
         }
 
-        await setupSubscription()
+        subscriber.on("subscribe", onSubscribe)
+        subscriber.on("error", onError)
+        subscriber.on("unsubscribe", onUnsubscribe)
+        subscriber.on("message", onMessage)
+
+        keepaliveInterval = setInterval(async () => {
+          await redis.publish(`channel:${channel}`, {
+            type: "ping",
+            timestamp: Date.now(),
+          })
+        }, 10_000)
       },
 
-      cancel() {
+      async cancel() {
         isClosed = true
         clearTimeout(reconnectTimeout)
+        clearInterval(keepaliveInterval)
 
-        if (subscriber) {
-          subscriber.unsubscribe().catch((err) => {
-            logger.error("Error during unsubscribe:", err)
-          })
+        if (handleAbort) {
+          request.signal.removeEventListener("abort", handleAbort)
         }
+
+        subscriber?.removeAllListeners()
+
+        await subscriber?.unsubscribe().catch((err) => {
+          logger.error("⚠️ Error during unsubscribe:", err)
+        })
       },
     })
 

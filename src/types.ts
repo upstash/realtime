@@ -3,6 +3,7 @@ export type SystemEvent =
   | { type: "reconnect" }
   | { type: "error"; error: string }
   | { type: "disconnected"; channel: string }
+  | { type: "ping"; timestamp: number }
 
 export type UserEvent<T = unknown> = {
   data: T
