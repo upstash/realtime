@@ -1,23 +1,31 @@
 # Upstash Realtime
 
-The easiest way to add realtime to any Next.js project.
+The easiest way to add realtime features to any Next.js project.
 
-- ◆ Deployable to Vercel
-- ◆ 100% type-safe using zod v4
-- ◆ Automatic connection management w/ delivery guarantee
-- ◆ Powered by Upstash Redis streams
+![Project Image](https://github.com/upstash/realtime/blob/main/public/thumbnail.png)
+
+## Features
+
+- Setup takes 1-2 minutes
+- Deploy anywhere Node.js runs: Vercel, Netlify, etc.
+- 100% type-safe using zod v4
+- Automatic connection management w/ delivery guarantee
+- Built-in middleware for authentication
+- Powered by Redis streams & server-sent events
 
 ---
 
 ## Installation
 
 ```bash
-bun install @upstash/realtime @upstash/redis zod
+bun install @upstash/realtime
 ```
 
 ## Quickstart
 
 ### 1. Configure Upstash Redis
+
+Upstash realtime is powered by Redis. We'll assume you already have the `@upstash/redis` package installed:
 
 ```ts
 // lib/redis.ts
@@ -30,7 +38,7 @@ export const redis = new Redis({
 })
 ```
 
-### 2. Define your event schema
+### 2. Define event schema
 
 Define the structure of realtime events in your app.
 
@@ -40,11 +48,13 @@ import { Realtime, InferRealtimeEvents } from "@upstash/realtime"
 import { redis } from "./redis"
 import z from "zod"
 
+// 👇 later triggered with `realtime.notification.alert.emit()`
 const schema = {
   notification: z.object({
     alert: z.string(),
   }),
 }
+
 
 export const realtime = new Realtime({ schema, redis })
 export type RealtimeEvents = InferRealtimeEvents<typeof realtime>
@@ -98,13 +108,15 @@ export default function MyComponent() {
 
 Serverless functions have execution time limits. The client automatically reconnects before timeout, with Redis Streams guaranteeing that no message is lost.
 
+**If you deploy to Vercel:** Make sure [fluid compute](https://vercel.com/docs/fluid-compute) is enabled for your project. This allows very high timeout limits, even for free users. Also, your functions will not be billed based on open time, but on active CPU time (only while realtime messages are processed).
+
 ```ts
 export const realtime = new Realtime({
   schema,
   redis,
 
-  // 👇 Set to - Vercel free plan: 60; Vercel pro plan: 500
-  maxDurationSecs: 60,
+  // 👇 Set to - Vercel free plan: 300; Vercel pro plan: 800
+  maxDurationSecs: 300,
 })
 ```
 
@@ -113,8 +125,8 @@ Match this to your API route timeout:
 ```ts
 // api/realtime/route.ts
 
-// 👇 Set to - Vercel free plan: 60; Vercel pro plan: 500
-export const maxDuration = 60
+// 👇 Set to - Vercel free plan: 300; Vercel pro plan: 800
+export const maxDuration = 300
 
 export const GET = handle({ realtime })
 ```
