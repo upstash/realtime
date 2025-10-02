@@ -3,9 +3,6 @@
   "workspaces": {
     "": {
       "name": "@upstash/realtime",
-      "dependencies": {
-        "zod": "^4.1.11",
-      },
       "devDependencies": {
         "@types/node": "^24.6.0",
         "@types/react": "^19.1.16",
@@ -13,10 +10,12 @@
         "@upstash/redis": "^1.35.4",
         "tsup": "^8.5.0",
         "typescript": "^5.9.2",
+        "zod": "^4.1.11",
       },
       "peerDependencies": {
         "react": ">=16.8.0",
         "react-dom": ">=16.8.0",
+        "zod": "^4.1.11",
       },
     },
   },

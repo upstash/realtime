@@ -6,12 +6,14 @@ The easiest way to add realtime features to any Next.js project.
 
 ## Features
 
-- Setup takes 1-2 minutes
-- Deploy anywhere Node.js runs: Vercel, Netlify, etc.
-- 100% type-safe using zod v4
-- Automatic connection management w/ delivery guarantee
-- Built-in middleware for authentication
-- Powered by Redis streams & server-sent events
+- Setup takes 60 seconds
+- Clean APIs & first-class TypeScript support
+- Extremely fast, zero dependencies, 1.9kB gzipped
+- Deploy anywhere: Vercel, Netlify, etc.
+- 100% type-safe using zod v4 or zod mini
+- Automatic connection management w/ message delivery guarantee
+- Built-in middleware and helpers - batteries included
+- HTTP-based: Redis streams & server-sent events
 
 ---
 
