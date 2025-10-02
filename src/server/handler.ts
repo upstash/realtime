@@ -34,6 +34,7 @@ export function handle<T extends Opts>(config: {
       })
     }
 
+    let cleanup: (() => Promise<void>) | undefined
     let subscriber: ReturnType<typeof redis.subscribe>
     let reconnectTimeout: NodeJS.Timeout | undefined
     let keepaliveInterval: NodeJS.Timeout | undefined
@@ -53,10 +54,26 @@ export function handle<T extends Opts>(config: {
           return
         }
 
-        handleAbort = async () => {
-          if (!isClosed) {
-            await this.cancel?.()
+        cleanup = async () => {
+          if (isClosed) return
+          isClosed = true
+
+          clearTimeout(reconnectTimeout)
+          clearInterval(keepaliveInterval)
+
+          if (handleAbort) {
+            request.signal.removeEventListener("abort", handleAbort)
           }
+
+          await subscriber?.unsubscribe().catch((err) => {
+            logger.error("⚠️ Error during unsubscribe:", err)
+          })
+
+          controller.close()
+        }
+
+        handleAbort = async () => {
+          await cleanup?.()
         }
 
         request.signal.addEventListener("abort", handleAbort)
@@ -73,9 +90,7 @@ export function handle<T extends Opts>(config: {
 
         reconnectTimeout = setTimeout(async () => {
           safeEnqueue(json({ type: "reconnect" }))
-          isClosed = true
-          controller.close()
-          await this.cancel?.()
+          await cleanup?.()
         }, streamDurationMs)
 
         onSubscribe = async () => {
@@ -145,7 +160,7 @@ export function handle<T extends Opts>(config: {
           safeEnqueue(json(errorEvent))
         }
 
-        onUnsubscribe = () => {
+        onUnsubscribe = async () => {
           logger.log("⬅️ Client unsubscribed from channel:", channel)
 
           const unsubscribedEvent: SystemEvent = {
@@ -154,6 +169,8 @@ export function handle<T extends Opts>(config: {
           }
 
           safeEnqueue(json(unsubscribedEvent))
+
+          await cleanup?.()
         }
 
         onMessage = async ({
@@ -212,19 +229,8 @@ export function handle<T extends Opts>(config: {
       },
 
       async cancel() {
-        isClosed = true
-        clearTimeout(reconnectTimeout)
-        clearInterval(keepaliveInterval)
-
-        if (handleAbort) {
-          request.signal.removeEventListener("abort", handleAbort)
-        }
-
-        subscriber?.removeAllListeners()
-
-        await subscriber?.unsubscribe().catch((err) => {
-          logger.error("⚠️ Error during unsubscribe:", err)
-        })
+        if (isClosed) return
+        await cleanup?.()
       },
     })
 
