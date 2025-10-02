@@ -1,9 +1,9 @@
 import { type Redis } from "@upstash/redis"
-import z from "zod/v4"
+import * as z from "zod/v4/core"
 
 const DEFAULT_VERCEL_FLUID_TIMEOUT = 300
 
-type Schema = Record<string, z.ZodObject>
+type Schema = Record<string, z.$ZodObject>
 
 export type Opts = {
   schema?: Schema
@@ -50,10 +50,12 @@ class RealtimeBase<T extends Opts> {
     const handlers: any = {}
     for (const [outerKey, zodObject] of Object.entries(this._schema)) {
       handlers[outerKey] = {}
-      for (const innerKey of Object.keys(zodObject.shape)) {
+      for (const innerKey of Object.keys(zodObject._zod.def.shape)) {
         handlers[outerKey][innerKey] = {
           emit: async (data: any) => {
-            zodObject.shape[innerKey]?.parse(data)
+            if (zodObject._zod.def.shape[innerKey]) {
+              z.parse(zodObject._zod.def.shape[innerKey], data)
+            }
 
             if (!this._redis) {
               this._logger.warn("No Redis instance provided to Realtime.")
