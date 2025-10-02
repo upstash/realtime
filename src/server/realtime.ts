@@ -1,7 +1,7 @@
 import { type Redis } from "@upstash/redis"
 import z from "zod/v4"
 
-const DEFAULT_VERCEL_FREE_PLAN_TIMEOUT = 10
+const DEFAULT_VERCEL_FLUID_TIMEOUT = 300
 
 type Schema = Record<string, z.ZodObject>
 
@@ -40,7 +40,7 @@ class RealtimeBase<T extends Opts> {
     Object.assign(this, data)
     this._schema = data.schema || {}
     this._redis = data.redis
-    this._maxDurationSecs = data.maxDurationSecs ?? DEFAULT_VERCEL_FREE_PLAN_TIMEOUT
+    this._maxDurationSecs = data.maxDurationSecs ?? DEFAULT_VERCEL_FLUID_TIMEOUT
     this._verbose = data.verbose ?? false
 
     Object.assign(this, this.createEventHandlers("default"))
