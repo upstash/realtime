@@ -62,26 +62,17 @@ class RealtimeBase<T extends Opts> {
               return
             }
 
-            const payload = {
-              data,
-              __event_path: [outerKey, innerKey],
-            }
-
             this._logger.log(`⬆️  Emitting event:`, {
               channel,
               __event_path: [outerKey, innerKey],
               data,
             })
 
-            const id = await this._redis.xadd(`channel:${channel}`, "*", payload, {
-              trim: { type: "MAXLEN", threshold: 100, comparison: "~" },
-            })
-
-            await this._redis.publish(`channel:${channel}`, {
-              data,
-              __event_path: [outerKey, innerKey],
-              __stream_id: id,
-            })
+            const id = await this._redis.eval(
+              luaScript,
+              [`channel:${channel}`, `channel:${channel}`],
+              [data, [outerKey, innerKey]]
+            )
           },
         }
       }
@@ -124,3 +115,26 @@ export type InferRealtimeEvents<T> = T extends Realtime<infer R>
   : never
 
 export const Realtime = RealtimeBase as new <T extends Opts>(data?: T) => Realtime<T>
+
+const luaScript = `
+  local streamKey = KEYS[1]
+  local channelKey = KEYS[2]
+  local data = ARGV[1]
+  local eventPath = ARGV[2]
+  local trimThreshold = tonumber(ARGV[3])
+  
+  -- Add to stream with trimming
+  local streamId = redis.call('XADD', streamKey, '*', 'data', data, '__event_path', eventPath, 'MAXLEN', '~', trimThreshold)
+  
+  -- Prepare publish payload with stream ID
+  local publishPayload = cjson.encode({
+    data = cjson.decode(data),
+    __event_path = cjson.decode(eventPath),
+    __stream_id = streamId
+  })
+  
+  -- Publish to channel
+  redis.call('PUBLISH', channelKey, publishPayload)
+  
+  return streamId
+`
