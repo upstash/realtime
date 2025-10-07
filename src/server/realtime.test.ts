@@ -190,4 +190,58 @@ describe('createEventHandlers', () => {
     // Clean up
     await redis.del(streamKey)
   })
+
+  test('should publish events and verify with subscription', async () => {
+    const redis = createTestRedis()
+    const testChannel = getTestChannel()
+    
+    const schema = {
+      user: z.object({
+        created: z.object({ id: z.string(), name: z.string() }),
+      }),
+    }
+
+    const realtime = new Realtime({
+      schema,
+      redis,
+      verbose: false,
+    })
+
+    const userData = { id: 'user-subscriber-test', name: 'Subscriber Jane' }
+    const channelKey = `channel:${testChannel}`
+    
+    // Set up subscription to capture published events
+    const receivedMessages: any[] = []
+    const subscriber = redis.subscribe([channelKey])
+    
+    subscriber.on('message', (data: any) => {
+      receivedMessages.push(data.message)
+    })
+
+    // Wait for subscription to establish
+    await wait(2000)
+    
+    // Emit event using custom channel
+    await realtime.channel(testChannel).user.created.emit(userData)
+
+    // Wait for the published event to be received
+    await wait(1000)
+
+    // Verify the event was published and received
+    expect(receivedMessages.length).toBe(1)
+    
+    const publishedEvent = receivedMessages[0]
+    expect(publishedEvent.data).toEqual(userData)
+    expect(publishedEvent.__event_path).toEqual(['user', 'created'])
+    expect(publishedEvent.__stream_id).toBeTruthy() // Should have a stream ID
+    
+    // Also verify it was added to the stream
+    const streamEntries = await redis.xrange(channelKey, '-', '+')
+    const streamIds = Object.keys(streamEntries)
+    expect(streamIds.length).toBe(1)
+    
+    // Clean up
+    await subscriber.unsubscribe()
+    await redis.del(channelKey)
+  }, 15_000) // Longer timeout for subscription test
 })
