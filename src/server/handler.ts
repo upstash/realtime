@@ -17,6 +17,10 @@ export function handle<T extends Opts>(config: {
     const channel = searchParams.get("channel") || "default"
     const reconnect = searchParams.get("reconnect")
     const last_ack = searchParams.get("last_ack")
+    const history_all = searchParams.get("history_all")
+    const history_length = searchParams.get("history_length")
+    const history_since = searchParams.get("history_since")
+    const connection_start = searchParams.get("connection_start")
 
     const redis = config.realtime._redis
     const logger = config.realtime._logger
@@ -125,18 +129,139 @@ export function handle<T extends Opts>(config: {
                 })
               }
             } else {
-              const lastMessage = await redis.xrevrange(`channel:${channel}`, "+", "-", 1)
+              const connectionStart = connection_start ?? String(Date.now())
 
-              const messageEntries = Object.entries(lastMessage)
-              const currentCursor = messageEntries[0]?.[0] ?? "0-0"
+              if (history_all || history_length || history_since) {
+                let start = history_since ? history_since : "-"
+                let count = history_length ? parseInt(history_length, 10) : undefined
 
-              const connectedEvent: SystemEvent = {
-                type: "connected",
-                channel,
-                cursor: currentCursor,
+                if (
+                  history_since &&
+                  parseInt(history_since, 10) > parseInt(connectionStart, 10)
+                ) {
+                  start = connectionStart
+                }
+
+                const history = await redis.xrevrange(
+                  `channel:${channel}`,
+                  "+",
+                  start,
+                  count
+                )
+
+                const messages = Object.entries(history)
+                const currentCursorId = messages[0]?.[0] ?? "0-0"
+                const oldestToNewestMessages = reverse(messages)
+
+                const connectedEvent: SystemEvent = {
+                  type: "connected",
+                  channel,
+                  cursor: currentCursorId,
+                }
+
+                safeEnqueue(json(connectedEvent))
+
+                oldestToNewestMessages.forEach(([__stream_id, value]) => {
+                  if (typeof value === "object" && value !== null) {
+                    const { __event_path, data } = value as Record<string, unknown>
+                    const userEvent: UserEvent = {
+                      data,
+                      __event_path: __event_path as string[],
+                      __stream_id,
+                    }
+                    safeEnqueue(json(userEvent))
+                  }
+                })
+              } else {
+                const history = await redis.xrevrange(
+                  `channel:${channel}`,
+                  "+",
+                  connectionStart
+                )
+
+                const messages = Object.entries(history)
+                const currentCursorId = messages[0]?.[0] ?? "0-0"
+                const oldestToNewestMessages = reverse(messages)
+
+                const connectedEvent: SystemEvent = {
+                  type: "connected",
+                  channel,
+                  cursor: currentCursorId,
+                }
+
+                safeEnqueue(json(connectedEvent))
+
+                oldestToNewestMessages.forEach(([__stream_id, value]) => {
+                  if (typeof value === "object" && value !== null) {
+                    const { __event_path, data } = value as Record<string, unknown>
+                    const userEvent: UserEvent = {
+                      data,
+                      __event_path: __event_path as string[],
+                      __stream_id,
+                    }
+                    safeEnqueue(json(userEvent))
+                  }
+                })
               }
 
-              safeEnqueue(json(connectedEvent))
+              // const currentCursor = await redis.xrevrange(`channel:${channel}`, "+", "-", 1)
+              // const currentCursorId = Object.keys(currentCursor)[0] ?? "0-0"
+
+              // const connectedEvent: SystemEvent = {
+              //   type: "connected",
+              //   channel,
+              //   cursor: currentCursorId,
+              // }
+
+              // safeEnqueue(json(connectedEvent))
+
+              // const sinceId = history_since ? history_since : "-"
+
+              // if (history_all || history_length || history_since) {
+              //   const count = history_all ? undefined : history_length ? parseInt(history_length, 10) : undefined
+              //   const sinceId = history_since ? history_since : "-"
+
+              //   const historyMessages = await redis.xrevrange(
+              //     `channel:${channel}`,
+              //     `(${startId}`,
+              //     sinceId,
+              //     count
+              //   )
+
+              //   const historyEntries = Object.entries(historyMessages).reverse()
+
+              //   historyEntries.forEach(([__stream_id, value]) => {
+              //     if (typeof value === "object" && value !== null) {
+              //       const { __event_path, data } = value as Record<string, unknown>
+              //       const userEvent: UserEvent = {
+              //         data,
+              //         __event_path: __event_path as string[],
+              //         __stream_id,
+              //       }
+
+              //       safeEnqueue(json(userEvent))
+              //     }
+              //   })
+              // }
+
+              // const messagesSinceConnection = await redis.xrange(
+              //   `channel:${channel}`,
+              //   startId,
+              //   "+"
+              // )
+
+              // Object.entries(messagesSinceConnection).forEach(([__stream_id, value]) => {
+              //   if (typeof value === "object" && value !== null) {
+              //     const { __event_path, data } = value as Record<string, unknown>
+              //     const userEvent: UserEvent = {
+              //       data,
+              //       __event_path: __event_path as string[],
+              //       __stream_id,
+              //     }
+
+              //     safeEnqueue(json(userEvent))
+              //   }
+              // })
             }
           } catch (err) {
             logger.error("Error in subscribe handler:", err)
@@ -257,4 +382,19 @@ class StreamingResponse extends Response {
       },
     })
   }
+}
+
+function reverse(array: Array<any>) {
+  const length = array.length
+
+  let left = null
+  let right = null
+
+  for (left = 0, right = length - 1; left < right; left += 1, right -= 1) {
+    const temporary = array[left]
+    array[left] = array[right]
+    array[right] = temporary
+  }
+
+  return array
 }

@@ -10,12 +10,23 @@ export type Opts = {
   redis?: Redis | undefined
   maxDurationSecs?: number
   verbose?: boolean
+  history?:
+    | {
+        maxLength?: number
+        expireAfterSecs?: number
+      }
+    | boolean
 }
 
 class RealtimeBase<T extends Opts> {
   private channels: Record<string, any> = {}
   private _schema: Schema
   private _verbose: boolean
+  private _history: {
+    maxLength?: number
+    expireAfterSecs?: number
+  }
+  private _trimConfig?: NonNullable<Parameters<Redis["xadd"]>[3]>["trim"]
 
   /** @internal */
   public readonly _redis?: Redis | undefined
@@ -42,6 +53,15 @@ class RealtimeBase<T extends Opts> {
     this._redis = data.redis
     this._maxDurationSecs = data.maxDurationSecs ?? DEFAULT_VERCEL_FLUID_TIMEOUT
     this._verbose = data.verbose ?? false
+    this._history = typeof data.history === "boolean" ? {} : data.history ?? {}
+
+    this._trimConfig = this._history.maxLength
+      ? {
+          type: "MAXLEN",
+          threshold: this._history.maxLength,
+          comparison: "=",
+        }
+      : undefined
 
     Object.assign(this, this.createEventHandlers("default"))
   }
@@ -62,24 +82,35 @@ class RealtimeBase<T extends Opts> {
               return
             }
 
+            const eventPath = [outerKey, innerKey]
+            const channelKey = `channel:${channel}`
+
             const payload = {
               data,
-              __event_path: [outerKey, innerKey],
+              __event_path: eventPath,
             }
 
             this._logger.log(`⬆️  Emitting event:`, {
               channel,
-              __event_path: [outerKey, innerKey],
+              __event_path: eventPath,
               data,
             })
 
-            const id = await this._redis.xadd(`channel:${channel}`, "*", payload, {
-              trim: { type: "MAXLEN", threshold: 100, comparison: "~" },
+            const pipeline = this._redis.pipeline()
+
+            pipeline.xadd(channelKey, "*", payload, {
+              ...(this._trimConfig && { trim: this._trimConfig }),
             })
 
-            await this._redis.publish(`channel:${channel}`, {
+            if (this._history.expireAfterSecs) {
+              pipeline.expire(channelKey, this._history.expireAfterSecs)
+            }
+
+            const [id] = await pipeline.exec<[string, ...(string | number)[]]>()
+
+            await this._redis.publish(channelKey, {
               data,
-              __event_path: [outerKey, innerKey],
+              __event_path: eventPath,
               __stream_id: id,
             })
           },
