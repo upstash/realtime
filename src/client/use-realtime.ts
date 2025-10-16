@@ -6,27 +6,62 @@ import type {
   UserEvent,
 } from "../types.js"
 
-interface Opts<T> {
-  channel?: string
+type IsEventMap<T> = T extends Record<string, any>
+  ? keyof T extends string
+    ? {
+        [K in keyof T]: T[K] extends Record<string, any> ? true : false
+      }[keyof T] extends true
+      ? true
+      : false
+    : false
+  : false
+
+type InferredEventPaths<T, Prefix extends string = "", Depth extends number = 0> = {
+  [K in keyof T]: K extends string
+    ? T[K] extends Record<string, any>
+      ? Depth extends 0
+        ? IsEventMap<T[K]> extends true
+          ? InferredEventPaths<T[K], `${K}.`, 1>
+          : never
+        : Depth extends 1
+        ? `${Prefix}${K}`
+        : never
+      : Prefix extends ""
+      ? K
+      : `${Prefix}${K}`
+    : never
+}[keyof T]
+
+type GetEventData<T, Path> = Path extends `${infer First}.${infer Rest}`
+  ? First extends keyof T
+    ? GetEventData<T[First], Rest>
+    : never
+  : Path extends keyof T
+  ? T[Path]
+  : unknown
+
+interface UseRealtimeOpts<T extends Record<string, any>, K extends string> {
+  channels?: string[]
   enabled?: boolean
   history?: { length?: number; since?: number } | boolean
-  events?: Partial<{
-    [N in keyof T]: Partial<{
-      [K in keyof T[N]]: (data: T[N][K]) => void
-    }>
-  }>
+  event: K
+  onData: (data: GetEventData<T, K>, channel: string) => void
   maxReconnectAttempts?: number
 }
 
 const PING_TIMEOUT_MS = 20_000
 
-export const useRealtime = <T extends Record<string, Record<string, unknown>>>({
-  channel = "default",
+export const useRealtime = <
+  T extends Record<string, any>,
+  K extends InferredEventPaths<T> = InferredEventPaths<T>
+>({
+  channels = ["default"],
   enabled = true,
   history,
-  events,
+  event,
+  onData,
   maxReconnectAttempts = 3,
-}: Opts<T> = {}) => {
+}: UseRealtimeOpts<T, K>) => {
   const [status, setStatus] = useState<ConnectionStatus>("disconnected")
 
   const eventSourceRef = useRef<EventSource | null>(null)
@@ -98,19 +133,24 @@ export const useRealtime = <T extends Record<string, Record<string, unknown>>>({
       const historyParamsString =
         !reconnect && historyParams.length > 0 ? `&${historyParams.join("&")}` : ""
 
-      const lastAck = lastAckRef.current.get(channel)
+      const lastAckParams = channels
+        .map((ch) => {
+          const lastAck = lastAckRef.current.get(ch)
+          return reconnect && lastAck ? `last_ack_${encodeURIComponent(ch)}=${encodeURIComponent(lastAck)}` : null
+        })
+        .filter(Boolean)
+        .join("&")
 
-      const lastAckParam =
-        reconnect && lastAck ? `&last_ack=${encodeURIComponent(lastAck)}` : ""
+      const lastAckParamsString = lastAckParams ? `&${lastAckParams}` : ""
 
       const connectionStartParam = !reconnect
         ? `&connection_start=${connectionStartTime}`
         : ""
 
+      const channelsParam = channels.map((ch) => `channels=${encodeURIComponent(ch)}`).join("&")
+
       const eventSource = new EventSource(
-        `/api/realtime?channel=${encodeURIComponent(
-          channel
-        )}${reconnectParam}${lastAckParam}${historyParamsString}${connectionStartParam}`
+        `/api/realtime?${channelsParam}${reconnectParam}${lastAckParamsString}${historyParamsString}${connectionStartParam}`
       )
       eventSourceRef.current = eventSource
 
@@ -118,7 +158,7 @@ export const useRealtime = <T extends Record<string, Record<string, unknown>>>({
         reconnectAttemptsRef.current = 0
         setStatus("connected")
         resetPingTimeout()
-        connectedChannelsRef.current.add(channel)
+        channels.forEach((ch) => connectedChannelsRef.current.add(ch))
       }
 
       eventSource.onmessage = (evt) => {
@@ -132,10 +172,11 @@ export const useRealtime = <T extends Record<string, Record<string, unknown>>>({
 
             switch (systemEvent.type) {
               case "connected":
-                const lastAckValue = lastAckRef.current.get(channel)
+                const channelName = systemEvent.channel
+                const lastAckValue = lastAckRef.current.get(channelName)
 
                 if (systemEvent.cursor && !lastAckValue) {
-                  lastAckRef.current.set(channel, systemEvent.cursor)
+                  lastAckRef.current.set(channelName, systemEvent.cursor)
                 }
                 break
               case "reconnect":
@@ -155,14 +196,16 @@ export const useRealtime = <T extends Record<string, Record<string, unknown>>>({
           if ("__event_path" in payload && "__stream_id" in payload) {
             const userEvent = payload as UserEvent
 
-            lastAckRef.current.set(channel, userEvent.__stream_id)
+            if (userEvent.__channel) {
+              lastAckRef.current.set(userEvent.__channel, userEvent.__stream_id)
+            }
 
-            const handler = userEvent.__event_path.reduce(
-              (acc: any, key: any) => acc?.[key],
-              events
-            )
+            const eventPath = userEvent.__event_path.join(".")
+            const channel = userEvent.__channel || "default"
 
-            handler?.(userEvent.data)
+            if (eventPath === event) {
+              onData(userEvent.data as GetEventData<T, K>, channel)
+            }
           }
         } catch (error) {
           console.warn("Error parsing message:", error)
@@ -209,15 +252,18 @@ export const useRealtime = <T extends Record<string, Record<string, unknown>>>({
       return
     }
 
-    if (connectedChannelsRef.current.has(channel)) {
-      connect({ reconnect: true })
+    const channelsChanged = channels.some(
+      (ch) => !connectedChannelsRef.current.has(ch)
+    ) || connectedChannelsRef.current.size !== channels.length
+
+    if (!channelsChanged && connectedChannelsRef.current.size > 0) {
       return
     }
 
     connect()
 
     return () => cleanup()
-  }, [channel, enabled, JSON.stringify(history), maxReconnectAttempts])
+  }, [JSON.stringify(channels), enabled, JSON.stringify(history), maxReconnectAttempts])
 
   return { status }
 }

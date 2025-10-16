@@ -157,6 +157,44 @@ useRealtime<RealtimeEvents>({
 })
 ```
 
+### History API
+
+Access historical messages and chain with live subscriptions:
+
+```ts
+const channel = realtime.channel("room-123")
+
+const messages = await channel.history({ length: 50 })
+console.log(messages)
+
+await channel.history({ length: 50 }).on("notification.alert", (data) => {
+  console.log(data)
+})
+```
+
+The history API returns a chainable promise that:
+- When awaited directly, returns an array of historical messages
+- When chained with `.on()`, first delivers all historical messages matching the event, then subscribes to live updates
+
+**Use Case 1: Just fetch history**
+```ts
+const messages = await realtime.channel("chat").history({ length: 100 })
+```
+
+**Use Case 2: History + live updates**
+```ts
+await realtime
+  .channel("chat")
+  .history({ length: 100 })
+  .on("message.sent", (data) => {
+    console.log("Message:", data)
+  })
+```
+
+Parameters:
+- `length`: Maximum number of messages to retrieve (most recent first)
+- `since`: Retrieve messages since a specific timestamp
+
 ### Connection Control
 
 ```tsx

@@ -9,6 +9,7 @@ export type UserEvent<T = unknown> = {
   data: T
   __event_path: string[]
   __stream_id: string
+  __channel?: string
 }
 
 export type RealtimeMessage<T = unknown> = SystemEvent | UserEvent<T>
