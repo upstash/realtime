@@ -1,7 +1,6 @@
 import { type Redis } from "@upstash/redis"
 import * as z from "zod/v4/core"
 import type { UserEvent } from "../types.js"
-import { json, StreamingResponse } from "./handler.js"
 
 const DEFAULT_VERCEL_FLUID_TIMEOUT = 300
 
@@ -72,7 +71,7 @@ class RealtimeBase<T extends Opts> {
 
   private generateStreamId(): string {
     const timestamp = Date.now()
-    
+
     if (timestamp !== this._lastTimestamp) {
       this._idBuffer.clear()
       this._lastTimestamp = timestamp
@@ -216,10 +215,14 @@ class RealtimeBase<T extends Opts> {
       const channelKey = `channel:${channel}`
       const sub = redis.subscribe(channelKey)
 
-      await new Promise<void>((resolve) => {
+      await new Promise<void>((resolve, reject) => {
         sub.on("subscribe", () => {
           this._logger.log("✅ Subscribed to channel:", channelKey)
           resolve()
+        })
+
+        sub.on("error", (err) => {
+          reject(err)
         })
       })
 
@@ -246,10 +249,12 @@ class RealtimeBase<T extends Opts> {
 
     const findSchema = (path: string[]): z.$ZodType | undefined => {
       let current: any = this._schema
+
       for (const key of path) {
         if (!current || typeof current !== "object") return undefined
         current = current[key]
       }
+
       return current?._zod || current?._def ? current : undefined
     }
 
@@ -291,14 +296,13 @@ class RealtimeBase<T extends Opts> {
         pipeline.expire(channelKey, this._history.expireAfterSecs)
       }
 
-      await Promise.all([
-        pipeline.exec(),
-        this._redis.publish(channelKey, {
-          data,
-          __event_path: pathParts,
-          __stream_id: id,
-        }),
-      ])
+      pipeline.publish(channelKey, {
+        data,
+        __event_path: pathParts,
+        __stream_id: id,
+      })
+
+      await pipeline.exec()
     }
 
     return handlers
@@ -329,7 +333,7 @@ type SchemaPaths<T, Prefix extends string = ""> = {
     : never
 }[keyof T]
 
-type EventPath<T extends Opts> = T["schema"] extends Schema
+export type EventPath<T extends Opts> = T["schema"] extends Schema
   ? SchemaPaths<T["schema"]>
   : never
 
@@ -341,7 +345,7 @@ type SchemaValue<T, Path extends string> = Path extends `${infer First}.${infer 
   ? T[Path]
   : never
 
-type EventData<T extends Opts, K extends string> = T["schema"] extends Schema
+export type EventData<T extends Opts, K extends string> = T["schema"] extends Schema
   ? SchemaValue<T["schema"], K> extends z.$ZodType
     ? z.infer<SchemaValue<T["schema"], K>>
     : never
@@ -403,7 +407,7 @@ type InferSchemaRecursive<T> = {
 export type InferSchema<T extends Schema> = InferSchemaRecursive<T>
 
 export type InferRealtimeEvents<T> = T extends Realtime<infer R>
-  ? InferSchema<NonNullable<R["schema"]>>
+  ? NonNullable<R["schema"]>
   : never
 
 function reverse(array: Array<any>) {

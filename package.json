@@ -1,7 +1,7 @@
 {
   "name": "@upstash/realtime",
   "description": "An HTTP-based realtime client powered by Redis Streams.",
-  "version": "0.2.6-canary.0",
+  "version": "0.2.7",
   "type": "module",
   "license": "MIT",
   "main": "dist/server/index.js",
@@ -53,12 +53,12 @@
     "@types/node": "^24.6.0",
     "@types/react": "^19.1.16",
     "@types/react-dom": "^19.1.9",
-    "@upstash/redis": "^1.35.4",
     "tsup": "^8.5.0",
     "typescript": "^5.9.2"
   },
   "dependencies": {},
   "peerDependencies": {
+    "@upstash/redis": ">=1.35.4",
     "zod": "^3.25.0 || ^4.0.0",
     "react": ">=16.8.0",
     "react-dom": ">=16.8.0"

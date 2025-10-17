@@ -5,63 +5,73 @@ import type {
   SystemEvent,
   UserEvent,
 } from "../types.js"
-
-type IsEventMap<T> = T extends Record<string, any>
-  ? keyof T extends string
-    ? {
-        [K in keyof T]: T[K] extends Record<string, any> ? true : false
-      }[keyof T] extends true
-      ? true
-      : false
-    : false
-  : false
-
-type InferredEventPaths<T, Prefix extends string = "", Depth extends number = 0> = {
-  [K in keyof T]: K extends string
-    ? T[K] extends Record<string, any>
-      ? Depth extends 0
-        ? IsEventMap<T[K]> extends true
-          ? InferredEventPaths<T[K], `${K}.`, 1>
-          : never
-        : Depth extends 1
-        ? `${Prefix}${K}`
-        : never
-      : Prefix extends ""
-      ? K
-      : `${Prefix}${K}`
-    : never
-}[keyof T]
-
-type GetEventData<T, Path> = Path extends `${infer First}.${infer Rest}`
-  ? First extends keyof T
-    ? GetEventData<T[First], Rest>
-    : never
-  : Path extends keyof T
-  ? T[Path]
-  : unknown
-
-interface UseRealtimeOpts<T extends Record<string, any>, K extends string> {
-  channels?: string[]
-  enabled?: boolean
-  history?: { length?: number; since?: number } | boolean
-  event: K
-  onData: (data: GetEventData<T, K>, channel: string) => void
-  maxReconnectAttempts?: number
-}
+import * as z from "zod/v4/core"
 
 const PING_TIMEOUT_MS = 20_000
 
-export const useRealtime = <
-  T extends Record<string, any>,
-  K extends InferredEventPaths<T> = InferredEventPaths<T>
->({
-  channels = ["default"],
-  enabled = true,
-  history,
-  event,
-  onData,
-  maxReconnectAttempts = 3,
-}: UseRealtimeOpts<T, K>) => {
+type EventPaths<
+  T,
+  Prefix extends string = "",
+  Depth extends readonly number[] = []
+> = Depth["length"] extends 10
+  ? never
+  : {
+      [K in keyof T & string]: T[K] extends z.$ZodType
+        ? `${Prefix}${K}`
+        : T[K] extends Record<string, any>
+        ? EventPaths<T[K], `${Prefix}${K}.`, [...Depth, 0]>
+        : `${Prefix}${K}`
+    }[keyof T & string]
+
+type EventData<
+  T,
+  K extends string,
+  Depth extends readonly number[] = []
+> = Depth["length"] extends 10
+  ? never
+  : K extends `${infer A}.${infer Rest}`
+  ? A extends keyof T
+    ? T[A] extends z.$ZodType
+      ? never
+      : EventData<T[A], Rest, [...Depth, 0]>
+    : never
+  : K extends keyof T
+  ? T[K] extends z.$ZodType
+    ? T[K]
+    : never
+  : never
+
+interface UseRealtimeOpts<T extends Record<string, any>, K extends EventPaths<T>> {
+  event?: K
+  onData?: (data: z.infer<EventData<T, K>>, channel: string) => void
+  channels?: string[]
+  enabled?: boolean
+  history?: { length?: number; since?: number } | boolean
+  maxReconnectAttempts?: number
+  api?: { url?: string; withCredentials?: boolean }
+}
+
+export function useRealtime<T extends Record<string, any>>(
+  opts?: { [K in EventPaths<T>]: UseRealtimeOpts<T, K> }[EventPaths<T>]
+): void
+export function useRealtime<T extends Record<string, any>, const K extends EventPaths<T>>(
+  opts?: UseRealtimeOpts<T, K>
+): void
+
+// impl
+export function useRealtime<T extends Record<string, any>, const K extends EventPaths<T>>(
+  opts: UseRealtimeOpts<T, K> = {} as UseRealtimeOpts<T, K>
+) {
+  const {
+    channels = ["default"],
+    maxReconnectAttempts = 3,
+    api = { url: "/api/realtime", withCredentials: false },
+    event,
+    onData,
+    enabled,
+    history,
+  } = opts
+
   const [status, setStatus] = useState<ConnectionStatus>("disconnected")
 
   const eventSourceRef = useRef<EventSource | null>(null)
@@ -112,6 +122,10 @@ export const useRealtime = <
 
     cleanup(reconnect)
 
+    if (channels.length === 0) {
+      return
+    }
+
     setStatus("connecting")
 
     try {
@@ -136,7 +150,9 @@ export const useRealtime = <
       const lastAckParams = channels
         .map((ch) => {
           const lastAck = lastAckRef.current.get(ch)
-          return reconnect && lastAck ? `last_ack_${encodeURIComponent(ch)}=${encodeURIComponent(lastAck)}` : null
+          return reconnect && lastAck
+            ? `last_ack_${encodeURIComponent(ch)}=${encodeURIComponent(lastAck)}`
+            : null
         })
         .filter(Boolean)
         .join("&")
@@ -147,11 +163,16 @@ export const useRealtime = <
         ? `&connection_start=${connectionStartTime}`
         : ""
 
-      const channelsParam = channels.map((ch) => `channels=${encodeURIComponent(ch)}`).join("&")
+      const channelsParam = channels
+        .map((ch) => `channels=${encodeURIComponent(ch)}`)
+        .join("&")
 
       const eventSource = new EventSource(
-        `/api/realtime?${channelsParam}${reconnectParam}${lastAckParamsString}${historyParamsString}${connectionStartParam}`
+        api.url +
+          `?${channelsParam}${reconnectParam}${lastAckParamsString}${historyParamsString}${connectionStartParam}`,
+        { withCredentials: api.withCredentials ?? false }
       )
+
       eventSourceRef.current = eventSource
 
       eventSource.onopen = () => {
@@ -204,7 +225,7 @@ export const useRealtime = <
             const channel = userEvent.__channel || "default"
 
             if (eventPath === event) {
-              onData(userEvent.data as GetEventData<T, K>, channel)
+              onData?.(userEvent.data as any, channel)
             }
           }
         } catch (error) {
@@ -252,9 +273,9 @@ export const useRealtime = <
       return
     }
 
-    const channelsChanged = channels.some(
-      (ch) => !connectedChannelsRef.current.has(ch)
-    ) || connectedChannelsRef.current.size !== channels.length
+    const channelsChanged =
+      channels.some((ch) => !connectedChannelsRef.current.has(ch)) ||
+      connectedChannelsRef.current.size !== channels.length
 
     if (!channelsChanged && connectedChannelsRef.current.size > 0) {
       return
