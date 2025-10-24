@@ -53,10 +53,10 @@ interface UseRealtimeOpts<T extends Record<string, any>, K extends EventPaths<T>
 
 export function useRealtime<T extends Record<string, any>>(
   opts?: { [K in EventPaths<T>]: UseRealtimeOpts<T, K> }[EventPaths<T>]
-): void
+): { status: ConnectionStatus }
 export function useRealtime<T extends Record<string, any>, const K extends EventPaths<T>>(
   opts?: UseRealtimeOpts<T, K>
-): void
+): { status: ConnectionStatus }
 
 // impl
 export function useRealtime<T extends Record<string, any>, const K extends EventPaths<T>>(
