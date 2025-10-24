@@ -44,7 +44,7 @@ type EventData<
 interface UseRealtimeOpts<T extends Record<string, any>, K extends EventPaths<T>> {
   event?: K
   onData?: (data: z.infer<EventData<T, K>>, channel: string) => void
-  channels?: string[]
+  channels?: (string | undefined)[]
   enabled?: boolean
   history?: { length?: number; since?: number } | boolean
   maxReconnectAttempts?: number
@@ -122,7 +122,7 @@ export function useRealtime<T extends Record<string, any>, const K extends Event
 
     cleanup(reconnect)
 
-    if (channels.length === 0) {
+    if (channels.filter(Boolean).length === 0) {
       return
     }
 
@@ -148,10 +148,13 @@ export function useRealtime<T extends Record<string, any>, const K extends Event
         !reconnect && historyParams.length > 0 ? `&${historyParams.join("&")}` : ""
 
       const lastAckParams = channels
+        .filter(Boolean)
         .map((ch) => {
-          const lastAck = lastAckRef.current.get(ch)
+          const lastAck = lastAckRef.current.get(ch as string)
           return reconnect && lastAck
-            ? `last_ack_${encodeURIComponent(ch)}=${encodeURIComponent(lastAck)}`
+            ? `last_ack_${encodeURIComponent(ch as string)}=${encodeURIComponent(
+                lastAck
+              )}`
             : null
         })
         .filter(Boolean)
@@ -164,7 +167,8 @@ export function useRealtime<T extends Record<string, any>, const K extends Event
         : ""
 
       const channelsParam = channels
-        .map((ch) => `channels=${encodeURIComponent(ch)}`)
+        .filter(Boolean)
+        .map((ch) => `channels=${encodeURIComponent(ch as string)}`)
         .join("&")
 
       const eventSource = new EventSource(
@@ -179,7 +183,9 @@ export function useRealtime<T extends Record<string, any>, const K extends Event
         reconnectAttemptsRef.current = 0
         setStatus("connected")
         resetPingTimeout()
-        channels.forEach((ch) => connectedChannelsRef.current.add(ch))
+        channels
+          .filter(Boolean)
+          .forEach((ch) => connectedChannelsRef.current.add(ch as string))
       }
 
       eventSource.onmessage = (evt) => {
@@ -274,7 +280,9 @@ export function useRealtime<T extends Record<string, any>, const K extends Event
     }
 
     const channelsChanged =
-      channels.some((ch) => !connectedChannelsRef.current.has(ch)) ||
+      channels
+        .filter(Boolean)
+        .some((ch) => !connectedChannelsRef.current.has(ch as string)) ||
       connectedChannelsRef.current.size !== channels.length
 
     if (!channelsChanged && connectedChannelsRef.current.size > 0) {
