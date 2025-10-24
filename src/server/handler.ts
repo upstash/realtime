@@ -1,5 +1,8 @@
 import type { Opts, Realtime } from "./realtime.js"
 import type { SystemEvent, UserEvent } from "../types.js"
+import type { SubscriberAdapter } from "./redis-adapter.js"
+
+const KEEPALIVE_INTERVAL_MS = 10_000 as const
 
 export function handle<T extends Opts>(config: {
   realtime: Realtime<T>
@@ -32,7 +35,7 @@ export function handle<T extends Opts>(config: {
       }
     })
 
-    const redis = config.realtime._redis
+    const redis = config.realtime._redisAdapter
     const logger = config.realtime._logger
 
     if (config.middleware) {
@@ -49,7 +52,7 @@ export function handle<T extends Opts>(config: {
     }
 
     let cleanup: (() => Promise<void>) | undefined
-    let subscriber: ReturnType<typeof redis.subscribe>
+    let subscriber: SubscriberAdapter
     let reconnectTimeout: NodeJS.Timeout | undefined
     let keepaliveInterval: NodeJS.Timeout | undefined
     let isClosed = false
@@ -315,7 +318,7 @@ export function handle<T extends Opts>(config: {
               timestamp: Date.now(),
             })
           }
-        }, 10_000)
+        }, KEEPALIVE_INTERVAL_MS)
       },
 
       async cancel() {

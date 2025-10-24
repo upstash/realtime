@@ -59,8 +59,17 @@
   "dependencies": {},
   "peerDependencies": {
     "@upstash/redis": ">=1.35.4",
-    "zod": "^3.25.0 || ^4.0.0",
+    "ioredis": "^5.0.0",
     "react": ">=16.8.0",
-    "react-dom": ">=16.8.0"
+    "react-dom": ">=16.8.0",
+    "zod": "^3.25.0 || ^4.0.0"
+  },
+  "peerDependenciesMeta": {
+    "@upstash/redis": {
+      "optional": true
+    },
+    "ioredis": {
+      "optional": true
+    }
   }
 }

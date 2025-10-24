@@ -14,6 +14,7 @@ The easiest way to add realtime features to any Next.js project.
 - Automatic connection management w/ message delivery guarantee
 - Built-in middleware and helpers - batteries included
 - HTTP-based: Redis streams & server-sent events
+- **Supports both `@upstash/redis` and `ioredis` clients**
 
 ---
 
@@ -23,11 +24,23 @@ The easiest way to add realtime features to any Next.js project.
 bun install @upstash/realtime
 ```
 
+You'll also need a Redis client. Install one of the following:
+
+```bash
+# Option 1: Upstash Redis (recommended for serverless)
+bun install @upstash/redis
+
+# Option 2: ioredis (for traditional Redis servers)
+bun install ioredis
+```
+
 ## Quickstart
 
-### 1. Configure Upstash Redis
+### 1. Configure Redis Client
 
-Upstash realtime is powered by Redis. We'll assume you already have the `@upstash/redis` package installed:
+Upstash Realtime works with both `@upstash/redis` and `ioredis`. Choose the one that fits your needs:
+
+#### Option A: Using @upstash/redis (Recommended for serverless)
 
 ```ts
 // lib/redis.ts
@@ -39,6 +52,22 @@ export const redis = new Redis({
   token: "AVDJAAIjcDEyZ...",
 })
 ```
+
+#### Option B: Using ioredis
+
+```ts
+// lib/redis.ts
+import Redis from "ioredis"
+
+export const redis = new Redis({
+  host: "your-redis-host.com",
+  port: 6379,
+  password: "your-password",
+  // ... other ioredis options
+})
+```
+
+> **Note:** The library automatically handles separate subscriber connections for ioredis, so you only need to pass a single client instance. No additional configuration is required.
 
 ### 2. Define event schema
 
@@ -249,6 +278,56 @@ The middleware function receives:
 - `channel`: The channel the client is attempting to connect to
 
 Return `undefined` or nothing to allow the connection. Return a `Response` object to block the connection with a custom error.
+
+### Redis Client Compatibility
+
+Upstash Realtime automatically detects which Redis client you're using and adapts accordingly. Both clients are fully supported:
+
+**@upstash/redis**
+- HTTP-based, perfect for serverless environments
+- No persistent connections needed
+- Works with Upstash Redis (REST API)
+
+**ioredis**
+- Traditional TCP connection
+- Works with any Redis server (self-hosted, AWS, etc.)
+- Full Redis Cluster and Sentinel support
+- Automatic pub/sub connection handling (dedicated subscriber connections are managed internally)
+
+The library provides a unified interface, so your application code remains the same regardless of which client you use. Simply pass your configured Redis client to the `Realtime` constructor:
+
+```ts
+import { Realtime } from "@upstash/realtime"
+import { redis } from "./redis" // Can be either @upstash/redis or ioredis
+
+export const realtime = new Realtime({ 
+  schema, 
+  redis // Automatically detected!
+})
+```
+
+**Pub/Sub Connection Management**
+
+When using ioredis, the library automatically creates dedicated connections for pub/sub operations. This is necessary because ioredis requires separate connections for subscription and command operations. The library handles all connection lifecycle management transparently, including:
+- Automatic creation of subscriber connections
+- Proper cleanup and disconnection on unsubscribe
+- Memory leak prevention through handler cleanup
+
+No additional configuration is needed from your application.
+
+**Type Safety**
+
+All adapter types are exported for advanced use cases:
+
+```ts
+import type { 
+  AnyRedisClient,
+  RedisAdapter,
+  SubscriberAdapter,
+  PipelineAdapter,
+  TrimConfig 
+} from "@upstash/realtime"
+```
 
 ---
 

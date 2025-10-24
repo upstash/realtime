@@ -1,6 +1,11 @@
-import { type Redis } from "@upstash/redis"
 import * as z from "zod/v4/core"
 import type { UserEvent } from "../types.js"
+import type {
+  AnyRedisClient,
+  RedisAdapter,
+  TrimConfig,
+} from "./redis-adapter.js"
+import { createRedisAdapter } from "./redis-adapter.js"
 
 const DEFAULT_VERCEL_FLUID_TIMEOUT = 300
 
@@ -8,7 +13,7 @@ type Schema = Record<string, z.$ZodType | Record<string, any>>
 
 export type Opts = {
   schema?: Schema
-  redis?: Redis | undefined
+  redis?: AnyRedisClient | undefined
   maxDurationSecs?: number
   verbose?: boolean
   history?:
@@ -27,12 +32,15 @@ class RealtimeBase<T extends Opts> {
     maxLength?: number
     expireAfterSecs?: number
   }
-  private _trimConfig?: NonNullable<Parameters<Redis["xadd"]>[3]>["trim"]
+  private _trimConfig: TrimConfig | undefined
   private _idBuffer: Set<string> = new Set()
   private _lastTimestamp: number = 0
 
   /** @internal */
-  public readonly _redis?: Redis | undefined
+  public readonly _redis?: AnyRedisClient | undefined
+
+  /** @internal */
+  public readonly _redisAdapter?: RedisAdapter | undefined
 
   /** @internal */
   public readonly _maxDurationSecs: number
@@ -54,16 +62,17 @@ class RealtimeBase<T extends Opts> {
     Object.assign(this, data)
     this._schema = data.schema || {}
     this._redis = data.redis
+    this._redisAdapter = data.redis ? createRedisAdapter(data.redis) : undefined
     this._maxDurationSecs = data.maxDurationSecs ?? DEFAULT_VERCEL_FLUID_TIMEOUT
     this._verbose = data.verbose ?? false
     this._history = typeof data.history === "boolean" ? {} : data.history ?? {}
 
     this._trimConfig = this._history.maxLength
-      ? {
+      ? ({
           type: "MAXLEN",
           threshold: this._history.maxLength,
           comparison: "=",
-        }
+        } as TrimConfig)
       : undefined
 
     Object.assign(this, this.createEventHandlers("default"))
@@ -94,7 +103,7 @@ class RealtimeBase<T extends Opts> {
     let historyFetchedAt: number
 
     const fetchHistory = async (params?: { length?: number; since?: number }) => {
-      const redis = this._redis
+      const redis = this._redisAdapter
       if (!redis) throw new Error("Redis not configured.")
 
       const channelKey = `channel:${channel}`
@@ -143,7 +152,7 @@ class RealtimeBase<T extends Opts> {
         finally: (onfinally?: (() => void) | null) => historyPromise.finally(onfinally),
 
         on: async (path: string, handler: (data: any) => any) => {
-          const redis = this._redis
+          const redis = this._redisAdapter
           if (!redis) throw new Error("Redis not configured.")
 
           const eventPath = path.split(".")
@@ -207,7 +216,7 @@ class RealtimeBase<T extends Opts> {
     }
 
     handlers.on = async (path: string, handler: (data: any) => any) => {
-      const redis = this._redis
+      const redis = this._redisAdapter
       if (!redis) throw new Error("Redis not configured.")
 
       const eventPath = path.split(".")
@@ -266,7 +275,7 @@ class RealtimeBase<T extends Opts> {
         z.parse(schema, data)
       }
 
-      if (!this._redis) {
+      if (!this._redisAdapter) {
         this._logger.warn("No Redis instance provided to Realtime.")
         return
       }
@@ -286,7 +295,7 @@ class RealtimeBase<T extends Opts> {
 
       const id = this.generateStreamId()
 
-      const pipeline = this._redis.pipeline()
+      const pipeline = this._redisAdapter.pipeline()
 
       pipeline.xadd(channelKey, id, payload, {
         ...(this._trimConfig && { trim: this._trimConfig }),
