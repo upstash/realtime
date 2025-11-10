@@ -10,7 +10,7 @@ The easiest way to add realtime features to any Next.js project.
 - Clean APIs & first-class TypeScript support
 - Extremely fast, zero dependencies, 1.9kB gzipped
 - Deploy anywhere: Vercel, Netlify, etc.
-- 100% type-safe using zod v4 or zod mini
+- 100% type-safe using any standard schema validator (Zod, Valibot, ArkType, etc.)
 - Automatic connection management w/ message delivery guarantee
 - Built-in middleware and helpers - batteries included
 - HTTP-based: Redis streams & server-sent events
@@ -42,21 +42,49 @@ export const redis = new Redis({
 
 ### 2. Define event schema
 
-Define the structure of realtime events in your app.
+Define the structure of realtime events in your app using any schema validator (Zod, Valibot, ArkType, etc.).
 
+**With Zod:**
 ```ts
 // lib/realtime.ts
 import { Realtime, InferRealtimeEvents } from "@upstash/realtime"
 import { redis } from "./redis"
-import z from "zod"
+import { z } from "zod"
 
 // 👇 later triggered with `realtime.notification.alert.emit()`
 const schema = {
-  notification: z.object({
+  notification: {
     alert: z.string(),
-  }),
+  },
 }
 
+export const realtime = new Realtime({ schema, redis })
+export type RealtimeEvents = InferRealtimeEvents<typeof realtime>
+```
+
+**With Valibot:**
+```ts
+import * as v from "valibot"
+
+const schema = {
+  notification: {
+    alert: v.string(),
+  },
+}
+
+export const realtime = new Realtime({ schema, redis })
+export type RealtimeEvents = InferRealtimeEvents<typeof realtime>
+```
+
+**With ArkType:**
+```ts
+import { type } from "arktype"
+
+const schema = {
+  notification: {
+    alert: type("string"),
+  },
+}
 
 export const realtime = new Realtime({ schema, redis })
 export type RealtimeEvents = InferRealtimeEvents<typeof realtime>

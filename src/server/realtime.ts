@@ -1,10 +1,10 @@
 import { type Redis } from "@upstash/redis"
-import * as z from "zod/v4/core"
 import type { UserEvent } from "../types.js"
+import type { StandardSchemaV1 } from "../standard-schema-spec"
 
 const DEFAULT_VERCEL_FLUID_TIMEOUT = 300
 
-type Schema = Record<string, z.$ZodType | Record<string, any>>
+type Schema = Record<string, StandardSchemaV1 | Record<string, any>>
 
 export type Opts = {
   schema?: Schema
@@ -247,7 +247,7 @@ class RealtimeBase<T extends Opts> {
       return sub
     }
 
-    const findSchema = (path: string[]): z.$ZodType | undefined => {
+    const findSchema = (path: string[]): StandardSchemaV1 | undefined => {
       let current: any = this._schema
 
       for (const key of path) {
@@ -255,7 +255,11 @@ class RealtimeBase<T extends Opts> {
         current = current[key]
       }
 
-      return current?._zod || current?._def ? current : undefined
+      if (current?.["~standard"]?.version === 1) {
+        return current
+      }
+      
+      return undefined
     }
 
     handlers.emit = async (eventPath: string, data: any) => {
@@ -263,7 +267,11 @@ class RealtimeBase<T extends Opts> {
       const schema = findSchema(pathParts)
 
       if (schema) {
-        z.parse(schema, data)
+        const result = await schema["~standard"].validate(data)
+        if (result.issues) {
+          const errorMsg = result.issues.map((issue) => issue.message).join(", ")
+          throw new Error(`Validation failed: ${errorMsg}`)
+        }
       }
 
       if (!this._redis) {
@@ -323,7 +331,7 @@ type SubscribeOpts<T> = {
 
 type SchemaPaths<T, Prefix extends string = ""> = {
   [K in keyof T]: K extends string
-    ? T[K] extends z.$ZodType
+    ? T[K] extends StandardSchemaV1
       ? Prefix extends ""
         ? K
         : `${Prefix}${K}`
@@ -346,8 +354,8 @@ type SchemaValue<T, Path extends string> = Path extends `${infer First}.${infer 
   : never
 
 export type EventData<T extends Opts, K extends string> = T["schema"] extends Schema
-  ? SchemaValue<T["schema"], K> extends z.$ZodType
-    ? z.infer<SchemaValue<T["schema"], K>>
+  ? SchemaValue<T["schema"], K> extends StandardSchemaV1
+    ? StandardSchemaV1.InferOutput<SchemaValue<T["schema"], K>>
     : never
   : never
 
@@ -397,8 +405,8 @@ export type Realtime<T extends Opts> = RealtimeBase<T> & {
 } */
 
 type InferSchemaRecursive<T> = {
-  [K in keyof T]: T[K] extends z.$ZodType
-    ? z.infer<T[K]>
+  [K in keyof T]: T[K] extends StandardSchemaV1
+    ? StandardSchemaV1.InferOutput<T[K]>
     : T[K] extends object
     ? InferSchemaRecursive<T[K]>
     : never
