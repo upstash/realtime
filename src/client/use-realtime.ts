@@ -5,7 +5,7 @@ import type {
   SystemEvent,
   UserEvent,
 } from "../types.js"
-import * as z from "zod/v4/core"
+import type { StandardSchemaV1 } from "../standard-schema-spec"
 
 const PING_TIMEOUT_MS = 20_000
 
@@ -16,7 +16,7 @@ type EventPaths<
 > = Depth["length"] extends 10
   ? never
   : {
-      [K in keyof T & string]: T[K] extends z.$ZodType
+      [K in keyof T & string]: T[K] extends StandardSchemaV1
         ? `${Prefix}${K}`
         : T[K] extends Record<string, any>
         ? EventPaths<T[K], `${Prefix}${K}.`, [...Depth, 0]>
@@ -31,19 +31,19 @@ type EventData<
   ? never
   : K extends `${infer A}.${infer Rest}`
   ? A extends keyof T
-    ? T[A] extends z.$ZodType
+    ? T[A] extends StandardSchemaV1
       ? never
       : EventData<T[A], Rest, [...Depth, 0]>
     : never
   : K extends keyof T
-  ? T[K] extends z.$ZodType
-    ? T[K]
+  ? T[K] extends StandardSchemaV1
+    ? StandardSchemaV1.InferOutput<T[K]>
     : never
   : never
 
 interface UseRealtimeOpts<T extends Record<string, any>, K extends EventPaths<T>> {
   event?: K
-  onData?: (data: z.infer<EventData<T, K>>, channel: string) => void
+  onData?: (data: EventData<T, K>, channel: string) => void
   channels?: string[]
   enabled?: boolean
   history?: { length?: number; since?: number } | boolean
