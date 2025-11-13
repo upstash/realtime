@@ -16,12 +16,12 @@ type EventPaths<
 > = Depth["length"] extends 10
   ? never
   : {
-    [K in keyof T & string]: T[K] extends z.$ZodType
-    ? `${Prefix}${K}`
-    : T[K] extends Record<string, any>
-    ? EventPaths<T[K], `${Prefix}${K}.`, [...Depth, 0]>
-    : `${Prefix}${K}`
-  }[keyof T & string]
+      [K in keyof T & string]: T[K] extends z.$ZodType
+        ? `${Prefix}${K}`
+        : T[K] extends Record<string, any>
+        ? EventPaths<T[K], `${Prefix}${K}.`, [...Depth, 0]>
+        : `${Prefix}${K}`
+    }[keyof T & string]
 
 type EventData<
   T,
@@ -31,14 +31,14 @@ type EventData<
   ? never
   : K extends `${infer A}.${infer Rest}`
   ? A extends keyof T
-  ? T[A] extends z.$ZodType
-  ? never
-  : EventData<T[A], Rest, [...Depth, 0]>
-  : never
+    ? T[A] extends z.$ZodType
+      ? never
+      : EventData<T[A], Rest, [...Depth, 0]>
+    : never
   : K extends keyof T
   ? T[K] extends z.$ZodType
-  ? T[K]
-  : never
+    ? T[K]
+    : never
   : never
 
 interface UseRealtimeOpts<T extends Record<string, any>, K extends EventPaths<T>> {
@@ -82,26 +82,27 @@ export function useRealtime<T extends Record<string, any>, const K extends Event
   const connectedChannelsRef = useRef<Set<string>>(new Set())
   const lastAckRef = useRef<Map<string, string>>(new Map())
 
-  const cleanup = (preserveReconnectState = false) => {
+  const cleanup = (preserveReconnectCount = false) => {
     if (eventSourceRef.current) {
-      eventSourceRef.current.close();
-      eventSourceRef.current = null;
+      eventSourceRef.current.close()
+      eventSourceRef.current = null
     }
     if (reconnectTimeoutRef.current) {
-      clearTimeout(reconnectTimeoutRef.current);
-      reconnectTimeoutRef.current = null;
+      clearTimeout(reconnectTimeoutRef.current)
+      reconnectTimeoutRef.current = null
     }
     if (pingTimeoutRef.current) {
-      clearTimeout(pingTimeoutRef.current);
-      pingTimeoutRef.current = null;
+      clearTimeout(pingTimeoutRef.current)
+      pingTimeoutRef.current = null
     }
-    if (!preserveReconnectState) {
-      reconnectAttemptsRef.current = 0;
+    if (!preserveReconnectCount) {
+      reconnectAttemptsRef.current = 0
       connectedChannelsRef.current.clear();
       lastAckRef.current.clear();
     }
-    setStatus("disconnected");
-  };
+
+    setStatus("disconnected")
+  }
 
   const resetPingTimeout = () => {
     if (pingTimeoutRef.current) {
@@ -170,7 +171,7 @@ export function useRealtime<T extends Record<string, any>, const K extends Event
 
       const eventSource = new EventSource(
         api.url +
-        `?${channelsParam}${reconnectParam}${lastAckParamsString}${historyParamsString}${connectionStartParam}`,
+          `?${channelsParam}${reconnectParam}${lastAckParamsString}${historyParamsString}${connectionStartParam}`,
         { withCredentials: api.withCredentials ?? false }
       )
 
