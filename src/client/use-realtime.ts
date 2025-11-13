@@ -97,6 +97,8 @@ export function useRealtime<T extends Record<string, any>, const K extends Event
     }
     if (!preserveReconnectCount) {
       reconnectAttemptsRef.current = 0
+      connectedChannelsRef.current.clear();
+      lastAckRef.current.clear();
     }
 
     setStatus("disconnected")
