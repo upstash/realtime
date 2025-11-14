@@ -3,6 +3,8 @@ import * as z from "zod/v4/core"
 import type { UserEvent } from "../types.js"
 
 const DEFAULT_VERCEL_FLUID_TIMEOUT = 300
+const DEFAULT_PING_CLIENT_INTERVAL_SECS = 10
+const DEFAULT_PING_REDIS_INTERVAL_SECS = 240
 
 type Schema = Record<string, z.$ZodType | Record<string, any>>
 
@@ -10,6 +12,8 @@ export type Opts = {
   schema?: Schema
   redis?: Redis | undefined
   maxDurationSecs?: number
+  pingClientIntervalSecs?: number
+  pingRedisIntervalSecs?: number
   verbose?: boolean
   history?:
     | {
@@ -38,6 +42,12 @@ class RealtimeBase<T extends Opts> {
   public readonly _maxDurationSecs: number
 
   /** @internal */
+  public readonly _pingClientIntervalSecs: number
+
+  /** @internal */
+  public readonly _pingRedisIntervalSecs: number
+
+  /** @internal */
   public readonly _logger = {
     log: (...args: any[]) => {
       if (this._verbose) console.log(...args)
@@ -55,6 +65,8 @@ class RealtimeBase<T extends Opts> {
     this._schema = data.schema || {}
     this._redis = data.redis
     this._maxDurationSecs = data.maxDurationSecs ?? DEFAULT_VERCEL_FLUID_TIMEOUT
+    this._pingClientIntervalSecs = data.pingClientIntervalSecs ?? DEFAULT_PING_CLIENT_INTERVAL_SECS
+    this._pingRedisIntervalSecs = data.pingRedisIntervalSecs ?? DEFAULT_PING_REDIS_INTERVAL_SECS
     this._verbose = data.verbose ?? false
     this._history = typeof data.history === "boolean" ? {} : data.history ?? {}
 

@@ -51,7 +51,8 @@ export function handle<T extends Opts>(config: {
     let cleanup: (() => Promise<void>) | undefined
     let subscriber: ReturnType<typeof redis.subscribe>
     let reconnectTimeout: NodeJS.Timeout | undefined
-    let keepaliveInterval: NodeJS.Timeout | undefined
+    let pingClientInterval: NodeJS.Timeout | undefined
+    let pingRedisInterval: NodeJS.Timeout | undefined
     let isClosed = false
     let handleAbort: (() => Promise<void>) | undefined
     let onSubscribe: (() => Promise<void>) | undefined
@@ -73,7 +74,8 @@ export function handle<T extends Opts>(config: {
           isClosed = true
 
           clearTimeout(reconnectTimeout)
-          clearInterval(keepaliveInterval)
+          clearInterval(pingClientInterval)
+          clearInterval(pingRedisInterval)
 
           if (handleAbort) {
             request.signal.removeEventListener("abort", handleAbort)
@@ -308,14 +310,23 @@ export function handle<T extends Opts>(config: {
         subscriber.on("unsubscribe", onUnsubscribe)
         subscriber.on("message", onMessage)
 
-        keepaliveInterval = setInterval(async () => {
-          for (const channel of channels) {
-            await redis.publish(`channel:${channel}`, {
-              type: "ping",
-              timestamp: Date.now(),
-            })
+        pingClientInterval = setInterval(() => {
+          const pingEvent: SystemEvent = {
+            type: "ping",
+            timestamp: Date.now(),
           }
-        }, 10_000)
+          safeEnqueue(json(pingEvent));
+        }, config.realtime._pingClientIntervalSecs * 1000);
+
+        pingRedisInterval = setInterval(async () => {
+          const pingEvent: SystemEvent = {
+            type: "ping",
+            timestamp: Date.now(),
+          }
+          for (const channel of channels) {
+            await redis.publish(`channel:${channel}`, pingEvent);
+          }
+        }, config.realtime._pingRedisIntervalSecs * 1000);
       },
 
       async cancel() {
