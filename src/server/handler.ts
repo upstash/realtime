@@ -141,7 +141,8 @@ export function handle<T extends Opts>(config: {
               const entries = Object.entries(missingMessages)
               if (entries.length > 0) {
                 entries.forEach(([id, value]) => {
-                  const event = userEvent.safeParse(value)
+                  const eventWithId = { ...value, id }
+                  const event = userEvent.safeParse(eventWithId)
                   if (event.success) safeEnqueue(json(event.data))
                 })
                 lastHistoryIds.set(channel, entries[entries.length - 1]?.[0] ?? "")
