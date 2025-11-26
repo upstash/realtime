@@ -1,31 +1,35 @@
 {
   "name": "@upstash/realtime",
-  "description": "An HTTP-based realtime client powered by Redis Streams.",
-  "version": "0.2.7",
-  "type": "module",
-  "license": "MIT",
-  "main": "dist/server/index.js",
-  "module": "dist/server/index.js",
-  "types": "dist/server/index.d.ts",
+  "version": "1.0.0-canary.1",
   "author": "Joscha Neske",
-  "access": "public",
   "repository": {
     "type": "git",
     "url": "https://github.com/upstash/realtime"
   },
-  "homepage": "https://github.com/upstash/realtime",
-  "keywords": [
-    "realtime",
-    "serverless",
-    "upstash"
-  ],
-  "scripts": {
-    "build": "tsup",
-    "lint": "tsc"
+  "main": "dist/server/index.js",
+  "module": "dist/server/index.js",
+  "devDependencies": {
+    "@types/node": "^24.6.0",
+    "@types/react": "^19.1.16",
+    "@types/react-dom": "^19.1.9",
+    "tsup": "^8.5.0",
+    "typescript": "^5.9.2",
+    "zod": "^4.1.11"
   },
-  "files": [
-    "dist"
-  ],
+  "peerDependencies": {
+    "@upstash/redis": ">=1.35.4",
+    "zod": "^3.25.0 || ^4.0.0",
+    "react": ">=16.8.0",
+    "react-dom": ">=16.8.0"
+  },
+  "peerDependenciesMeta": {
+    "react": {
+      "optional": true
+    },
+    "react-dom": {
+      "optional": true
+    }
+  },
   "exports": {
     ".": {
       "import": {
@@ -48,19 +52,22 @@
       }
     }
   },
-  "devDependencies": {
-    "zod": "^4.1.11",
-    "@types/node": "^24.6.0",
-    "@types/react": "^19.1.16",
-    "@types/react-dom": "^19.1.9",
-    "tsup": "^8.5.0",
-    "typescript": "^5.9.2"
+  "access": "public",
+  "description": "An HTTP-based realtime client powered by Redis Streams.",
+  "files": [
+    "dist"
+  ],
+  "homepage": "https://github.com/upstash/realtime",
+  "keywords": [
+    "realtime",
+    "serverless",
+    "upstash"
+  ],
+  "license": "MIT",
+  "scripts": {
+    "build": "tsup",
+    "lint": "tsc"
   },
-  "dependencies": {},
-  "peerDependencies": {
-    "@upstash/redis": ">=1.35.4",
-    "zod": "^3.25.0 || ^4.0.0",
-    "react": ">=16.8.0",
-    "react-dom": ">=16.8.0"
-  }
+  "type": "module",
+  "types": "dist/server/index.d.ts"
 }

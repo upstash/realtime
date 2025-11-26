@@ -1,6 +1,13 @@
 import { type Redis } from "@upstash/redis"
 import * as z from "zod/v4/core"
-import type { UserEvent } from "../types.js"
+import {
+  EventPaths,
+  EventPayloadUnion,
+  HistoryArgs,
+  userEvent,
+  type UserEvent
+} from "../shared/types.js"
+import { compareStreamIds } from "./utils.js"
 
 const DEFAULT_VERCEL_FLUID_TIMEOUT = 300
 
@@ -28,8 +35,6 @@ class RealtimeBase<T extends Opts> {
     expireAfterSecs?: number
   }
   private _trimConfig?: NonNullable<Parameters<Redis["xadd"]>[3]>["trim"]
-  private _idBuffer: Set<string> = new Set()
-  private _lastTimestamp: number = 0
 
   /** @internal */
   public readonly _redis?: Redis | undefined
@@ -69,182 +74,124 @@ class RealtimeBase<T extends Opts> {
     Object.assign(this, this.createEventHandlers("default"))
   }
 
-  private generateStreamId(): string {
-    const timestamp = Date.now()
-
-    if (timestamp !== this._lastTimestamp) {
-      this._idBuffer.clear()
-      this._lastTimestamp = timestamp
-    }
-
-    let sequence = 0
-    let id = `${timestamp}-${sequence}`
-
-    while (this._idBuffer.has(id)) {
-      sequence++
-      id = `${timestamp}-${sequence}`
-    }
-
-    this._idBuffer.add(id)
-    return id
-  }
-
   private createEventHandlers(channel: string): any {
     const handlers: any = {}
-    let historyFetchedAt: number
+    let unsubscribe: undefined | (() => void) = undefined
+    let pingInterval: undefined | NodeJS.Timeout = undefined
 
-    const fetchHistory = async (params?: { length?: number; since?: number }) => {
+    const startPingInterval = () => {
+      pingInterval = setInterval(() => {
+        this._redis?.publish(channel, { type: "ping", timestamp: Date.now() })
+      }, 60_000)
+    }
+
+    const stopPingInterval = () => {
+      if (pingInterval) clearInterval(pingInterval)
+    }
+
+    handlers.history = async (args?: HistoryArgs) => {
       const redis = this._redis
       if (!redis) throw new Error("Redis not configured.")
 
-      const channelKey = `channel:${channel}`
-      const start = params?.since ? String(params.since) : "-"
-      const count = params?.length
+      const start = args?.start ? String(args.start) : "-"
+      const end = args?.end ? String(args.end) : "+"
+      const limit = Math.min(args?.limit ?? 1000, 1000)
 
-      const history = await redis.xrevrange(channelKey, "+", start, count)
+      const history = (await redis.xrange(channel, start, end, limit)) as Record<
+        string,
+        UserEvent
+      >
 
       const messages = Object.entries(history)
-      const oldestToNewestMessages = reverse(messages)
 
-      return oldestToNewestMessages
-        .map(([__stream_id, value]) => {
+      return messages
+        .map(([_, value]) => {
           if (typeof value === "object" && value !== null) {
-            const { __event_path, data } = value as Record<string, unknown>
-            return {
-              data,
-              __event_path: __event_path as string[],
-              __stream_id,
-              __channel: channel,
-            }
+            const { id, channel, event, data } = value
+            return { data, event, id, channel }
           }
           return null
         })
         .filter(Boolean)
     }
 
-    const matchesEventPath = (messagePath: string[], filterPath: string[]): boolean => {
-      if (filterPath.length > messagePath.length) return false
-      return filterPath.every((part, i) => part === messagePath[i])
-    }
-
-    handlers.history = (params?: { length?: number; since?: number }) => {
-      const historyPromise = fetchHistory(params)
-
-      return {
-        then: <TResult1 = any, TResult2 = never>(
-          onfulfilled?: ((value: any) => TResult1 | PromiseLike<TResult1>) | null,
-          onrejected?: ((reason: any) => TResult2 | PromiseLike<TResult2>) | null
-        ) => historyPromise.then(onfulfilled, onrejected),
-
-        catch: <TResult = never>(
-          onrejected?: ((reason: any) => TResult | PromiseLike<TResult>) | null
-        ) => historyPromise.catch(onrejected),
-
-        finally: (onfinally?: (() => void) | null) => historyPromise.finally(onfinally),
-
-        on: async (path: string, handler: (data: any) => any) => {
-          const redis = this._redis
-          if (!redis) throw new Error("Redis not configured.")
-
-          const eventPath = path.split(".")
-          const channelKey = `channel:${channel}`
-
-          const processedIds = new Set<string>()
-          let isProcessingHistory = true
-
-          const sub = redis.subscribe(channelKey)
-
-          await new Promise<void>((resolve) => {
-            sub.on("subscribe", () => {
-              this._logger.log("✅ Subscribed to channel:", channelKey)
-              resolve()
-            })
-          })
-
-          const messageBuffer: any[] = []
-
-          sub.on("message", ({ channel, message }) => {
-            if (typeof message === "object" && message !== null) {
-              const { __stream_id, __event_path, data } = message as any
-              const messageEventPath = __event_path as string[]
-
-              if (matchesEventPath(messageEventPath, eventPath)) {
-                if (isProcessingHistory) {
-                  messageBuffer.push({ __stream_id, data })
-                } else {
-                  if (!processedIds.has(__stream_id)) {
-                    processedIds.add(__stream_id)
-                    handler(data)
-                  }
-                }
-              }
-            }
-          })
-
-          const messages = await historyPromise
-
-          for (const msg of messages) {
-            if (msg && matchesEventPath(msg.__event_path, eventPath)) {
-              processedIds.add(msg.__stream_id)
-              await handler(msg.data)
-            }
-          }
-
-          isProcessingHistory = false
-
-          for (const bufferedMsg of messageBuffer) {
-            if (!processedIds.has(bufferedMsg.__stream_id)) {
-              processedIds.add(bufferedMsg.__stream_id)
-              await handler(bufferedMsg.data)
-            }
-          }
-
-          processedIds.clear()
-
-          return sub
-        },
+    handlers.unsubscribe = () => {
+      if (unsubscribe) {
+        unsubscribe()
+        this._logger.log("✅ Connection closed successfully.")
       }
     }
 
-    handlers.on = async (path: string, handler: (data: any) => any) => {
+    handlers.subscribe = async ({
+      events,
+      onData,
+      history,
+    }: SubscribeArgs<any, any>): Promise<() => void> => {
       const redis = this._redis
       if (!redis) throw new Error("Redis not configured.")
 
-      const eventPath = path.split(".")
+      const buffer: UserEvent[] = []
+      let isHistoryReplayed = false
+      let lastHistoryId: string | null = null
 
-      const channelKey = `channel:${channel}`
-      const sub = redis.subscribe(channelKey)
+      const sub = redis.subscribe<UserEvent>(channel)
 
-      await new Promise<void>((resolve, reject) => {
-        sub.on("subscribe", () => {
-          this._logger.log("✅ Subscribed to channel:", channelKey)
+      await new Promise<void>((resolve) => {
+        sub.on("subscribe", async () => {
+          if (history) {
+            const start =
+              typeof history === "object" && history.start ? String(history.start) : "-"
+            const end =
+              typeof history === "object" && history.end ? String(history.end) : "+"
+            const limit = typeof history === "object" ? history.limit : undefined
+
+            const messages = await redis.xrange(channel, start, end, limit)
+
+            const entries = Object.entries(messages)
+            for (const [id, message] of entries) {
+              if (!message.event || !events.includes(message.event)) continue
+
+              const result = userEvent.safeParse(message)
+              if (result.success) onData(result.data)
+            }
+
+            if (entries.length > 0) {
+              lastHistoryId = entries[entries.length - 1]?.[0] ?? null
+            }
+          }
+
+          for (const message of buffer) {
+            if (lastHistoryId && compareStreamIds(message.id, lastHistoryId) <= 0)
+              continue
+            onData(message)
+          }
+
+          buffer.length = 0
+          isHistoryReplayed = true
+          startPingInterval()
           resolve()
-        })
-
-        sub.on("error", (err) => {
-          reject(err)
         })
       })
 
-      sub.on("message", ({ channel, message }) => {
-        if (typeof message === "object" && message !== null) {
-          const { __stream_id, __event_path, data } = message as any
+      sub.on("message", ({ message }) => {
+        if (!message.event || !events.includes(message.event)) return
 
-          const userEvent: UserEvent = {
-            data,
-            __event_path: __event_path as string[],
-            __stream_id: __stream_id as string,
-            __channel: channel,
-          }
+        const result = userEvent.safeParse(message)
+        if (!result.success) return
 
-          const messageEventPath = __event_path as string[]
-          if (matchesEventPath(messageEventPath, eventPath)) {
-            handler(userEvent.data)
-          }
+        if (!isHistoryReplayed) {
+          buffer.push(result.data)
+        } else {
+          onData(result.data)
         }
       })
 
-      return sub
+      sub.on("unsubscribe", () => {
+        stopPingInterval()
+      })
+
+      unsubscribe = () => sub.unsubscribe()
+      return () => sub.unsubscribe()
     }
 
     const findSchema = (path: string[]): z.$ZodType | undefined => {
@@ -258,8 +205,8 @@ class RealtimeBase<T extends Opts> {
       return current?._zod || current?._def ? current : undefined
     }
 
-    handlers.emit = async (eventPath: string, data: any) => {
-      const pathParts = eventPath.split(".")
+    handlers.emit = async (event: string, data: any) => {
+      const pathParts = event.split(".")
       const schema = findSchema(pathParts)
 
       if (schema) {
@@ -271,38 +218,38 @@ class RealtimeBase<T extends Opts> {
         return
       }
 
-      const channelKey = `channel:${channel}`
+      const id = await this._redis.xadd(
+        channel,
+        "*",
+        { data, event, channel } as Record<string, unknown>,
+        {
+          ...(this._trimConfig && { trim: this._trimConfig }),
+        }
+      )
 
-      const payload = {
+      const payload: UserEvent = {
         data,
-        __event_path: pathParts,
+        event,
+        channel,
+        id,
       }
-
-      this._logger.log(`⬆️  Emitting event:`, {
-        channel: channelKey,
-        __event_path: pathParts,
-        data,
-      })
-
-      const id = this.generateStreamId()
 
       const pipeline = this._redis.pipeline()
 
-      pipeline.xadd(channelKey, id, payload, {
-        ...(this._trimConfig && { trim: this._trimConfig }),
-      })
-
       if (this._history.expireAfterSecs) {
-        pipeline.expire(channelKey, this._history.expireAfterSecs)
+        pipeline.expire(channel, this._history.expireAfterSecs)
       }
 
-      pipeline.publish(channelKey, {
-        data,
-        __event_path: pathParts,
-        __stream_id: id,
-      })
+      pipeline.publish(channel, payload)
 
       await pipeline.exec()
+
+      this._logger.log(`⬆️  Emitted event:`, {
+        id,
+        data,
+        event,
+        channel,
+      })
     }
 
     return handlers
@@ -315,10 +262,6 @@ class RealtimeBase<T extends Opts> {
 
     return this.channels[channel]
   }
-}
-
-type SubscribeOpts<T> = {
-  history?: boolean
 }
 
 type SchemaPaths<T, Prefix extends string = ""> = {
@@ -352,49 +295,30 @@ export type EventData<T extends Opts, K extends string> = T["schema"] extends Sc
   : never
 
 export type HistoryMessage = {
-  data: any
-  __event_path: string[]
-  __stream_id: string
-  __channel: string
+  id: string
+  event: string
+  channel: string
+  data: unknown
 }
 
-export type ChainableHistory<T extends Opts> = {
-  then: <TResult1 = HistoryMessage[], TResult2 = never>(
-    onfulfilled?: ((value: HistoryMessage[]) => TResult1 | PromiseLike<TResult1>) | null,
-    onrejected?: ((reason: any) => TResult2 | PromiseLike<TResult2>) | null
-  ) => Promise<TResult1 | TResult2>
-  catch: <TResult = never>(
-    onrejected?: ((reason: any) => TResult | PromiseLike<TResult>) | null
-  ) => Promise<TResult>
-  finally: (onfinally?: (() => void) | null) => Promise<HistoryMessage[]>
-  on: <K extends EventPath<T>>(
-    event: K,
-    handler: (data: EventData<T, K>) => void
-  ) => Promise<any>
+type SubscribeArgs<T extends Opts, E extends EventPaths<T["schema"]>> = {
+  events: readonly E[]
+  onData: (arg: EventPayloadUnion<T["schema"], E>) => void
+  history?: boolean | HistoryArgs
 }
 
 type RealtimeChannel<T extends Opts> = {
-  on: <K extends EventPath<T>>(
-    events: K | Array<K>,
-    handler: (data: EventData<T, K>) => void
-  ) => Promise<void>
+  subscribe: <E extends EventPaths<T["schema"]>>(
+    args: SubscribeArgs<T, E>
+  ) => Promise<() => void>
+  unsubscribe: () => void
   emit: <K extends EventPath<T>>(event: K, data: EventData<T, K>) => Promise<void>
-  history: (params?: { length?: number; since?: number }) => ChainableHistory<T>
+  history: (params?: HistoryArgs) => Promise<HistoryMessage[]>
 }
 
 export type Realtime<T extends Opts> = RealtimeBase<T> & {
   channel: (name: string) => RealtimeChannel<T>
-} & RealtimeChannel<T> /* & {
-  [K in keyof T["schema"]]: {
-    [R in keyof z.infer<T["schema"][K]>]: {
-      // subscribe: (
-      //   handler: (data: z.infer<T["schema"][K]>[R]) => void,
-      //   opts?: SubscribeOpts<T["schema"]>
-      // ) => any
-      emit: (value: z.infer<T["schema"][K]>[R]) => Promise<void>
-    }
-  }
-} */
+} & RealtimeChannel<T>
 
 type InferSchemaRecursive<T> = {
   [K in keyof T]: T[K] extends z.$ZodType
@@ -409,20 +333,5 @@ export type InferSchema<T extends Schema> = InferSchemaRecursive<T>
 export type InferRealtimeEvents<T> = T extends Realtime<infer R>
   ? NonNullable<R["schema"]>
   : never
-
-function reverse(array: Array<any>) {
-  const length = array.length
-
-  let left = null
-  let right = null
-
-  for (left = 0, right = length - 1; left < right; left += 1, right -= 1) {
-    const temporary = array[left]
-    array[left] = array[right]
-    array[right] = temporary
-  }
-
-  return array
-}
 
 export const Realtime = RealtimeBase as new <T extends Opts>(data?: T) => Realtime<T>
