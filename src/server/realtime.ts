@@ -105,10 +105,10 @@ class RealtimeBase<T extends Opts> {
       const messages = Object.entries(history)
 
       return messages
-        .map(([_, value]) => {
+        .map(([entryId, value]) => {
           if (typeof value === "object" && value !== null) {
-            const { id, channel, event, data } = value
-            return { data, event, id, channel }
+            const { channel, event, data } = value
+            return { data, event, id: entryId, channel }
           }
           return null
         })
@@ -151,7 +151,7 @@ class RealtimeBase<T extends Opts> {
             for (const [id, message] of entries) {
               if (!message.event || !events.includes(message.event)) continue
 
-              const result = userEvent.safeParse(message)
+              const result = userEvent.safeParse({ ...message, id })
               if (result.success) onData(result.data)
             }
 
