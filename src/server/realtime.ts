@@ -105,10 +105,10 @@ class RealtimeBase<T extends Opts> {
       const messages = Object.entries(history)
 
       return messages
-        .map(([entryId, value]) => {
+        .map(([id, value]) => {
           if (typeof value === "object" && value !== null) {
             const { channel, event, data } = value
-            return { data, event, id: entryId, channel }
+            return { data, event, id, channel }
           }
           return null
         })
