@@ -12,8 +12,8 @@ import {
   type ConnectionStatus,
   type RealtimeMessage,
   EventPaths,
-} from "../shared/types"
-import { useRealtime, UseRealtimeOpts } from "./use-realtime"
+} from "../shared/types.js"
+import { useRealtime, UseRealtimeOpts } from "./use-realtime.js"
 
 type RealtimeContextValue = {
   status: ConnectionStatus
