@@ -47,6 +47,7 @@ export function RealtimeProvider({
   const pingTimeoutRef = useRef<NodeJS.Timeout | null>(null)
   const reconnectAttemptsRef = useRef(0)
   const lastAckRef = useRef<Map<string, string>>(new Map())
+  const lastReplaySinceRef = useRef<number | null>(null)
   const connectTimeoutRef = useRef<NodeJS.Timeout | null>(null)
   const debounceTimeoutRef = useRef<NodeJS.Timeout | null>(null)
 
@@ -97,7 +98,10 @@ export function RealtimeProvider({
   }
 
   const connect = (opts?: ConnectOpts) => {
-    const { replayEventsSince } = opts ?? { replayEventsSince: Date.now() }
+    const { replayEventsSince } = opts ?? {
+      replayEventsSince: lastReplaySinceRef.current ?? Date.now(),
+    }
+    lastReplaySinceRef.current = replayEventsSince
     const channels = Array.from(getAllNeededChannels())
 
     if (channels.length === 0) return
