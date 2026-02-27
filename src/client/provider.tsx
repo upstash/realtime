@@ -101,7 +101,7 @@ export function RealtimeProvider({
     const { replayEventsSince } = opts ?? {
       replayEventsSince: lastReplaySinceRef.current ?? Date.now(),
     }
-    lastReplaySinceRef.current = replayEventsSince
+    lastReplaySinceRef.current = replayEventsSince ?? null
     const channels = Array.from(getAllNeededChannels())
 
     if (channels.length === 0) return
