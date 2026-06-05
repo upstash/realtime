@@ -13,6 +13,7 @@ import {
   type RealtimeMessage,
   EventPaths,
 } from "../shared/types.js"
+import { createSubscriptionRegistry } from "./subscription-registry.js"
 import { useRealtime, UseRealtimeOpts } from "./use-realtime.js"
 
 type RealtimeContextValue = {
@@ -38,25 +39,18 @@ export function RealtimeProvider({
 }: RealtimeProviderProps) {
   const [status, setStatus] = useState<ConnectionStatus>("disconnected")
 
-  const localSubsRef = useRef<
-    Map<string, { channels: Set<string>; cb: (msg: RealtimeMessage) => void }>
-  >(new Map())
+  const registryRef = useRef(createSubscriptionRegistry())
 
   const eventSourceRef = useRef<EventSource | null>(null)
   const reconnectTimeoutRef = useRef<NodeJS.Timeout | null>(null)
   const pingTimeoutRef = useRef<NodeJS.Timeout | null>(null)
   const reconnectAttemptsRef = useRef(0)
-  const lastAckRef = useRef<Map<string, string>>(new Map())
   const lastReplaySinceRef = useRef<number | null>(null)
   const connectTimeoutRef = useRef<NodeJS.Timeout | null>(null)
   const debounceTimeoutRef = useRef<NodeJS.Timeout | null>(null)
 
   const getAllNeededChannels = useCallback(() => {
-    const channels = new Set<string>()
-    localSubsRef.current.forEach((sub) => {
-      sub.channels.forEach((ch) => channels.add(ch))
-    })
-    return channels
+    return registryRef.current.getAllChannels()
   }, [])
 
   const cleanup = () => {
@@ -123,7 +117,7 @@ export function RealtimeProvider({
 
       const lastAckParam = channels
         .map((c) => {
-          const lastAck = lastAckRef.current.get(c) ?? String(replayEventsSince)
+          const lastAck = registryRef.current.lastAck.get(c) ?? String(replayEventsSince)
           return `last_ack_${encodeURIComponent(c)}=${encodeURIComponent(lastAck)}`
         })
         .join("&")
@@ -204,7 +198,7 @@ export function RealtimeProvider({
       const event = systemResult.data
       if (event.type === "connected") {
         if (event.cursor) {
-          lastAckRef.current.set(event.channel, event.cursor)
+          registryRef.current.lastAck.set(event.channel, event.cursor)
         }
       }
 
@@ -214,9 +208,9 @@ export function RealtimeProvider({
     const event = userEvent.safeParse(payload)
 
     if (event.success) {
-      lastAckRef.current.set(event.data.channel, event.data.id)
+      registryRef.current.lastAck.set(event.data.channel, event.data.id)
 
-      localSubsRef.current.forEach((sub) => {
+      registryRef.current.subscriptions.forEach((sub) => {
         if (sub.channels.has(event.data.channel)) {
           sub.cb(payload)
         }
@@ -233,20 +227,14 @@ export function RealtimeProvider({
     channels: string[],
     cb: (msg: RealtimeMessage) => void
   ) => {
-    localSubsRef.current.set(id, { channels: new Set(channels), cb })
+    registryRef.current.register(id, channels, cb)
     debouncedConnect()
   }
 
   const unregister = (id: string) => {
-    const channels = Array.from(localSubsRef.current.get(id)?.channels ?? [])
+    registryRef.current.unregister(id)
 
-    channels.forEach((channel) => {
-      lastAckRef.current.delete(channel)
-    })
-
-    localSubsRef.current.delete(id)
-
-    if (localSubsRef.current.size === 0) {
+    if (registryRef.current.subscriptions.size === 0) {
       cleanup()
 
       if (debounceTimeoutRef.current) {
