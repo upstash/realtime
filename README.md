@@ -16,6 +16,10 @@ The easiest way to add realtime features to any Next.js project.
 - 🔋 Built-in middleware and authentication helpers
 - 📶 100% HTTP-based: Redis streams & SSE
 
+### Multiple hooks on the same channel
+
+You can safely call `useRealtime()` multiple times with the same channel (for example, separate hooks that listen to different event subsets). The provider tracks per-channel ack state and only clears it when no active registration still uses that channel.
+
 ---
 
 ## Quickstart
