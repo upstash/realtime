@@ -77,17 +77,6 @@ class RealtimeBase<T extends Opts> {
   private createEventHandlers(channel: string): any {
     const handlers: any = {}
     let unsubscribe: undefined | (() => void) = undefined
-    let pingInterval: undefined | NodeJS.Timeout = undefined
-
-    const startPingInterval = () => {
-      pingInterval = setInterval(() => {
-        this._redis?.publish(channel, { type: "ping", timestamp: Date.now() })
-      }, 60_000)
-    }
-
-    const stopPingInterval = () => {
-      if (pingInterval) clearInterval(pingInterval)
-    }
 
     handlers.history = async (args?: HistoryArgs) => {
       const redis = this._redis
@@ -136,6 +125,12 @@ class RealtimeBase<T extends Opts> {
 
       const sub = redis.subscribe<UserEvent>(channel)
 
+      let pingInterval: undefined | NodeJS.Timeout = undefined
+      const stopPingInterval = () => {
+        if (pingInterval) clearInterval(pingInterval)
+        pingInterval = undefined
+      }
+
       await new Promise<void>((resolve) => {
         sub.on("subscribe", async () => {
           if (history) {
@@ -168,7 +163,9 @@ class RealtimeBase<T extends Opts> {
 
           buffer.length = 0
           isHistoryReplayed = true
-          startPingInterval()
+          pingInterval = setInterval(() => {
+            this._redis?.publish(channel, { type: "ping", timestamp: Date.now() })
+          }, 60_000)
           resolve()
         })
       })
@@ -190,8 +187,12 @@ class RealtimeBase<T extends Opts> {
         stopPingInterval()
       })
 
-      unsubscribe = () => sub.unsubscribe()
-      return () => sub.unsubscribe()
+      const unsubscribeWithCleanup = () => {
+        stopPingInterval()
+        sub.unsubscribe()
+      }
+      unsubscribe = unsubscribeWithCleanup
+      return unsubscribeWithCleanup
     }
 
     const findSchema = (path: string[]): z.$ZodType | undefined => {
