@@ -1,53 +1,29 @@
 import { expect, test } from "bun:test"
+import { EventEmitter } from "node:events"
 
-import { Realtime } from "../dist/server/index.js"
+import { Realtime } from "../src/server/index.js"
 
-class FakeSubscriber {
-  listeners = new Map()
-
-  on(event, listener) {
-    const listeners = this.listeners.get(event) ?? new Set()
-    listeners.add(listener)
-    this.listeners.set(event, listeners)
-  }
-
-  emit(event, payload) {
-    for (const listener of this.listeners.get(event) ?? []) {
-      listener(payload)
-    }
-  }
-
+class FakeSubscriber extends EventEmitter {
   async unsubscribe() {
     this.emit("unsubscribe", 0)
   }
 }
 
-function deferred() {
-  let resolve
-  const promise = new Promise((resolvePromise) => {
-    resolve = resolvePromise
-  })
-  return { promise, resolve }
-}
-
-function historyEntry({ id: _id, ...event }) {
-  return event
-}
-
 async function subscribeWithDelayedHistory({ historyEvents, liveEvent }) {
   const subscriber = new FakeSubscriber()
-  const snapshotCaptured = deferred()
-  const releaseHistory = deferred()
-  const stream = new Map(historyEvents.map((event) => [event.id, historyEntry(event)]))
+  const snapshotCaptured = Promise.withResolvers()
+  const releaseHistory = Promise.withResolvers()
+  const history = Object.fromEntries(
+    historyEvents.map(({ id, ...fields }) => [id, fields])
+  )
   const redis = {
     subscribe() {
       return subscriber
     },
     async xrange() {
-      const snapshot = Object.fromEntries(stream)
       snapshotCaptured.resolve()
       await releaseHistory.promise
-      return snapshot
+      return history
     },
     async publish() {
       return 1
@@ -66,13 +42,13 @@ async function subscribeWithDelayedHistory({ historyEvents, liveEvent }) {
   subscriber.emit("subscribe", 1)
   await snapshotCaptured.promise
 
-  stream.set(liveEvent.id, historyEntry(liveEvent))
   subscriber.emit("message", { channel: "updates", message: liveEvent })
 
   releaseHistory.resolve()
   const unsubscribe = await subscribe
+  unsubscribe()
 
-  return { received, unsubscribe }
+  return received
 }
 
 test("replays history before live events received during replay", async () => {
@@ -88,16 +64,12 @@ test("replays history before live events received during replay", async () => {
     channel: "updates",
     data: { value: "live" },
   }
-  const { received, unsubscribe } = await subscribeWithDelayedHistory({
+  const received = await subscribeWithDelayedHistory({
     historyEvents: [historyEvent],
     liveEvent,
   })
 
-  try {
-    expect(received).toEqual([historyEvent, liveEvent])
-  } finally {
-    await unsubscribe()
-  }
+  expect(received).toEqual([historyEvent, liveEvent])
 })
 
 test("deduplicates live events already included in history", async () => {
@@ -107,14 +79,10 @@ test("deduplicates live events already included in history", async () => {
     channel: "updates",
     data: { value: "overlap" },
   }
-  const { received, unsubscribe } = await subscribeWithDelayedHistory({
+  const received = await subscribeWithDelayedHistory({
     historyEvents: [event],
     liveEvent: event,
   })
 
-  try {
-    expect(received).toEqual([event])
-  } finally {
-    await unsubscribe()
-  }
+  expect(received).toEqual([event])
 })

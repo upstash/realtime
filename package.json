@@ -67,7 +67,7 @@
   "scripts": {
     "build": "tsup",
     "lint": "tsc",
-    "test": "bun run build && bun test test/*.test.js"
+    "test": "bun test"
   },
   "type": "module",
   "types": "dist/server/index.d.ts"
