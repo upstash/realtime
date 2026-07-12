@@ -136,6 +136,21 @@ class RealtimeBase<T extends Opts> {
 
       const sub = redis.subscribe<UserEvent>(channel)
 
+      // Listen before replaying history so events that arrive after the XRANGE
+      // snapshot are buffered until the historical entries have been delivered.
+      sub.on("message", ({ message }) => {
+        if (!message.event || !events.includes(message.event)) return
+
+        const result = userEvent.safeParse(message)
+        if (!result.success) return
+
+        if (!isHistoryReplayed) {
+          buffer.push(result.data)
+        } else {
+          onData(result.data)
+        }
+      })
+
       await new Promise<void>((resolve) => {
         sub.on("subscribe", async () => {
           if (history) {
@@ -171,19 +186,6 @@ class RealtimeBase<T extends Opts> {
           startPingInterval()
           resolve()
         })
-      })
-
-      sub.on("message", ({ message }) => {
-        if (!message.event || !events.includes(message.event)) return
-
-        const result = userEvent.safeParse(message)
-        if (!result.success) return
-
-        if (!isHistoryReplayed) {
-          buffer.push(result.data)
-        } else {
-          onData(result.data)
-        }
       })
 
       sub.on("unsubscribe", () => {
