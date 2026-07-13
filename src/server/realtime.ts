@@ -132,6 +132,7 @@ class RealtimeBase<T extends Opts> {
 
       const buffer: UserEvent[] = []
       let isHistoryReplayed = false
+      let isUnsubscribed = false
       let lastHistoryId: string | null = null
 
       const sub = redis.subscribe<UserEvent>(channel)
@@ -145,6 +146,14 @@ class RealtimeBase<T extends Opts> {
         const result = userEvent.safeParse(message)
         if (!result.success) return
 
+        // An event can arrive both via the XRANGE snapshot and pub/sub,
+        // since emit runs XADD before PUBLISH. Stream ids are monotonic,
+        // so anything at or before the last replayed id was already
+        // delivered from history. Events buffered while lastHistoryId is
+        // still null are deduplicated when the buffer is flushed below.
+        if (lastHistoryId && compareStreamIds(result.data.id, lastHistoryId) <= 0)
+          return
+
         if (!isHistoryReplayed) {
           buffer.push(result.data)
         } else {
@@ -153,6 +162,7 @@ class RealtimeBase<T extends Opts> {
       })
 
       sub.on("unsubscribe", () => {
+        isUnsubscribed = true
         stopPingInterval()
       })
 
@@ -188,7 +198,9 @@ class RealtimeBase<T extends Opts> {
 
           buffer.length = 0
           isHistoryReplayed = true
-          startPingInterval()
+          // An unsubscribe that fired during replay already ran
+          // stopPingInterval; starting the interval now would leak it.
+          if (!isUnsubscribed) startPingInterval()
           resolve()
         })
       })
