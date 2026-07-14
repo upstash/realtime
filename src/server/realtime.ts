@@ -4,6 +4,8 @@ import {
   EventPaths,
   EventPayloadUnion,
   HistoryArgs,
+  realtimeCursor,
+  type RealtimeCursor,
   userEvent,
   type UserEvent
 } from "../shared/types.js"
@@ -12,6 +14,23 @@ import { compareStreamIds } from "./utils.js"
 const DEFAULT_VERCEL_FLUID_TIMEOUT = 300
 
 type Schema = Record<string, z.$ZodType | Record<string, any>>
+
+/** Narrows a stored string back to a cursor that can be passed as `after`. */
+export function isRealtimeCursor(value: string): value is RealtimeCursor {
+  return realtimeCursor.safeParse(value).success
+}
+
+export class CursorUnavailableError extends Error {
+  readonly channel: string
+  readonly cursor: string
+
+  constructor(channel: string, cursor: string) {
+    super(`Cursor ${cursor} is unavailable for channel ${channel}.`)
+    this.name = "CursorUnavailableError"
+    this.channel = channel
+    this.cursor = cursor
+  }
+}
 
 export type Opts = {
   schema?: Schema
@@ -97,10 +116,7 @@ class RealtimeBase<T extends Opts> {
       const end = args?.end ? String(args.end) : "+"
       const limit = Math.min(args?.limit ?? 1000, 1000)
 
-      const history = (await redis.xrange(channel, start, end, limit)) as Record<
-        string,
-        UserEvent
-      >
+      const history = await redis.xrange(channel, start, end, limit)
 
       const messages = Object.entries(history)
 
@@ -126,14 +142,26 @@ class RealtimeBase<T extends Opts> {
       events,
       onData,
       history,
+      after,
     }: SubscribeArgs<any, any>): Promise<() => void> => {
+      if (after !== undefined && history !== undefined) {
+        throw new TypeError("The after and history options cannot be used together.")
+      }
+      if (after !== undefined && !isRealtimeCursor(after)) {
+        throw new CursorUnavailableError(channel, after)
+      }
+
       const redis = this._redis
       if (!redis) throw new Error("Redis not configured.")
 
       const buffer: UserEvent[] = []
       let isHistoryReplayed = false
       let isUnsubscribed = false
-      let lastHistoryId: string | null = null
+      let lastHistoryId: string | null = after ?? null
+
+      const deliver = (message: UserEvent) => {
+        onData({ ...message, cursor: message.id })
+      }
 
       const sub = redis.subscribe<UserEvent>(channel)
 
@@ -157,7 +185,7 @@ class RealtimeBase<T extends Opts> {
         if (!isHistoryReplayed) {
           buffer.push(result.data)
         } else {
-          onData(result.data)
+          deliver(result.data)
         }
       })
 
@@ -166,42 +194,63 @@ class RealtimeBase<T extends Opts> {
         stopPingInterval()
       })
 
-      await new Promise<void>((resolve) => {
+      await new Promise<void>((resolve, reject) => {
         sub.on("subscribe", async () => {
-          if (history) {
-            const start =
-              typeof history === "object" && history.start ? String(history.start) : "-"
-            const end =
-              typeof history === "object" && history.end ? String(history.end) : "+"
-            const limit = typeof history === "object" ? history.limit : undefined
+          try {
+            let entries: [string, Record<string, unknown>][] = []
 
-            const messages = await redis.xrange(channel, start, end, limit)
+            if (after !== undefined) {
+              const messages = await redis.xrange(channel, after, "+")
+              entries = Object.entries(messages)
 
-            const entries = Object.entries(messages)
+              if (entries[0]?.[0] !== after) {
+                throw new CursorUnavailableError(channel, after)
+              }
+              // Drop the cursor entry itself: after is exclusive.
+              entries = entries.slice(1)
+            } else if (history) {
+              const start =
+                typeof history === "object" && history.start ? String(history.start) : "-"
+              const end =
+                typeof history === "object" && history.end ? String(history.end) : "+"
+              const limit = typeof history === "object" ? history.limit : undefined
+              const messages = await redis.xrange(channel, start, end, limit)
+
+              entries = Object.entries(messages)
+            }
+
             for (const [id, message] of entries) {
               if (!message.event || !events.includes(message.event)) continue
 
               const result = userEvent.safeParse({ ...message, id })
-              if (result.success) onData(result.data)
+              if (result.success) deliver(result.data)
             }
 
-            if (entries.length > 0) {
-              lastHistoryId = entries[entries.length - 1]?.[0] ?? null
+            const lastEntry = entries[entries.length - 1]
+            if (lastEntry) lastHistoryId = lastEntry[0]
+
+            for (const message of buffer) {
+              if (lastHistoryId && compareStreamIds(message.id, lastHistoryId) <= 0)
+                continue
+              deliver(message)
             }
-          }
 
-          for (const message of buffer) {
-            if (lastHistoryId && compareStreamIds(message.id, lastHistoryId) <= 0)
-              continue
-            onData(message)
+            buffer.length = 0
+            isHistoryReplayed = true
+            // An unsubscribe that fired during replay already ran
+            // stopPingInterval; starting the interval now would leak it.
+            if (!isUnsubscribed) startPingInterval()
+            resolve()
+          } catch (error) {
+            if (!isUnsubscribed) {
+              try {
+                await sub.unsubscribe()
+              } catch (unsubscribeError) {
+                this._logger.error("⚠️ Error closing subscription:", unsubscribeError)
+              }
+            }
+            reject(error)
           }
-
-          buffer.length = 0
-          isHistoryReplayed = true
-          // An unsubscribe that fired during replay already ran
-          // stopPingInterval; starting the interval now would leak it.
-          if (!isUnsubscribed) startPingInterval()
-          resolve()
         })
       })
 
@@ -233,13 +282,15 @@ class RealtimeBase<T extends Opts> {
         return
       }
 
-      const id = await this._redis.xadd(
-        channel,
-        "*",
-        { data, event, channel } as Record<string, unknown>,
-        {
-          ...(this._trimConfig && { trim: this._trimConfig }),
-        }
+      const id = realtimeCursor.parse(
+        await this._redis.xadd(
+          channel,
+          "*",
+          { data, event, channel },
+          {
+            ...(this._trimConfig && { trim: this._trimConfig }),
+          }
+        )
       )
 
       const payload: UserEvent = {
@@ -316,11 +367,18 @@ export type HistoryMessage = {
   data: unknown
 }
 
+export type SubscriptionEvent<
+  T extends Opts,
+  E extends EventPaths<T["schema"]>
+> = EventPayloadUnion<T["schema"], E> & { cursor: RealtimeCursor }
+
 type SubscribeArgs<T extends Opts, E extends EventPaths<T["schema"]>> = {
   events: readonly E[]
-  onData: (arg: EventPayloadUnion<T["schema"], E>) => void
-  history?: boolean | HistoryArgs
-}
+  onData: (arg: SubscriptionEvent<T, E>) => void
+} & (
+  | { history?: boolean | HistoryArgs; after?: never }
+  | { after: RealtimeCursor; history?: never }
+)
 
 type RealtimeChannel<T extends Opts> = {
   subscribe: <E extends EventPaths<T["schema"]>>(

@@ -15,8 +15,15 @@ export const systemEvent = z.discriminatedUnion("type", [
 
 export type SystemEvent = z.infer<typeof systemEvent>
 
+export const STREAM_ID_PATTERN = /^\d+-\d+$/
+
+/** An opaque position returned by a server-side subscription. */
+export const realtimeCursor = z.string().regex(STREAM_ID_PATTERN).brand<"RealtimeCursor">()
+
+export type RealtimeCursor = z.infer<typeof realtimeCursor>
+
 export const userEvent = z.object({
-  id: z.string(),
+  id: realtimeCursor,
   data: z.unknown(),
   event: z.string(),
   channel: z.string(),
