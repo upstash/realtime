@@ -5,25 +5,38 @@ Each event delivered by a server-side subscription includes an opaque, channel-s
 continuing with live delivery:
 
 ```ts
-import { CursorUnavailableError, isRealtimeCursor } from "@upstash/realtime"
+import {
+  CursorUnavailableError,
+  isRealtimeCursor,
+  type RealtimeCursor,
+} from "@upstash/realtime"
+
+async function subscribeToJobs(after?: RealtimeCursor) {
+  return await realtime.channel("jobs").subscribe({
+    events: ["job.updated"],
+    ...(after ? { after } : {}),
+    onData(message) {
+      handleJobUpdate(message.data)
+      saveCursor("jobs", message.cursor)
+    },
+  })
+}
 
 const stored = await loadCursor("jobs")
 
 if (stored !== null && isRealtimeCursor(stored)) {
   try {
-    const unsubscribe = await realtime.channel("jobs").subscribe({
-      events: ["job.updated"],
-      after: stored,
-      onData(message) {
-        handleJobUpdate(message.data)
-        saveCursor("jobs", message.cursor)
-      },
-    })
+    await subscribeToJobs(stored)
   } catch (error) {
-    if (error instanceof CursorUnavailableError) {
-      // Reload canonical state before starting a new subscription.
-    }
+    if (!(error instanceof CursorUnavailableError)) throw error
+    // The cursor was trimmed or expired: reload canonical state,
+    // then start over without a cursor.
+    await reloadJobState()
+    await subscribeToJobs()
   }
+} else {
+  // No usable cursor yet: subscribe fresh.
+  await subscribeToJobs()
 }
 ```
 
