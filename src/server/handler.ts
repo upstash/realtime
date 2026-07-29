@@ -249,7 +249,7 @@ export function json(data: SystemEvent | UserEvent) {
 
 export class StreamingResponse extends Response {
   constructor(res: ReadableStream<any>, init?: ResponseInit) {
-    super(res as any, {
+    super(res, {
       ...init,
       status: 200,
       headers: {

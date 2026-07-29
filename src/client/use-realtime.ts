@@ -36,7 +36,7 @@ export function useRealtime<T extends Record<string, any>, const E extends Event
       return
     }
 
-    const validChannels = channels.filter(Boolean) as string[]
+    const validChannels = channels.filter((channel): channel is string => !!channel)
     if (validChannels.length === 0) return
 
     context.register(registrationId, validChannels, (msg) => {
@@ -45,7 +45,7 @@ export function useRealtime<T extends Record<string, any>, const E extends Event
       if (result.success) {
         const { event, channel, data } = result.data
 
-        if (events && events.length > 0 && !events.includes(event as E)) {
+        if (events && events.length > 0 && !events.some((name) => name === event)) {
           return
         }
 
