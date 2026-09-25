@@ -15,11 +15,18 @@ const DEFAULT_VERCEL_FLUID_TIMEOUT = 300
 
 type Schema = Record<string, z.$ZodType | Record<string, any>>
 
-/** Narrows a stored string back to a cursor that can be passed as `after`. */
+/**
+ * Narrows a stored string back to a cursor that can be passed as `after`.
+ *
+ * @see node_modules/@upstash/realtime/docs/server-side-cursor-resumption.md
+ */
 export function isRealtimeCursor(value: string): value is RealtimeCursor {
   return realtimeCursor.safeParse(value).success
 }
 
+/**
+ * @see node_modules/@upstash/realtime/docs/server-side-cursor-resumption.md
+ */
 export class CursorUnavailableError extends Error {
   readonly channel: string
   readonly cursor: string
@@ -45,6 +52,9 @@ export type Opts = {
     | boolean
 }
 
+/**
+ * @see node_modules/@upstash/realtime/docs/sdk/features/server-side.mdx
+ */
 class RealtimeBase<T extends Opts> {
   private channels: Record<string, any> = {}
   private _schema: Schema
@@ -321,6 +331,9 @@ class RealtimeBase<T extends Opts> {
     return handlers
   }
 
+  /**
+   * @see node_modules/@upstash/realtime/docs/sdk/features/channels.mdx
+   */
   channel<N extends string>(channel: N): RealtimeChannel<T> {
     if (!this.channels[channel]) {
       this.channels[channel] = this.createEventHandlers(channel)
@@ -381,11 +394,23 @@ type SubscribeArgs<T extends Opts, E extends EventPaths<T["schema"]>> = {
 )
 
 type RealtimeChannel<T extends Opts> = {
+  /**
+   * @see node_modules/@upstash/realtime/docs/sdk/features/server-side.mdx
+   */
   subscribe: <E extends EventPaths<T["schema"]>>(
     args: SubscribeArgs<T, E>
   ) => Promise<() => void>
+  /**
+   * @see node_modules/@upstash/realtime/docs/sdk/features/server-side.mdx
+   */
   unsubscribe: () => void
+  /**
+   * @see node_modules/@upstash/realtime/docs/sdk/features/server-side.mdx
+   */
   emit: <K extends EventPath<T>>(event: K, data: EventData<T, K>) => Promise<void>
+  /**
+   * @see node_modules/@upstash/realtime/docs/sdk/features/history.mdx
+   */
   history: (params?: HistoryArgs) => Promise<HistoryMessage[]>
 }
 
@@ -407,4 +432,7 @@ export type InferRealtimeEvents<T> = T extends Realtime<infer R>
   ? NonNullable<R["schema"]>
   : never
 
+/**
+ * @see node_modules/@upstash/realtime/docs/sdk/overall/quickstart.mdx
+ */
 export const Realtime = RealtimeBase as new <T extends Opts>(data?: T) => Realtime<T>
