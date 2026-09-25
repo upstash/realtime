@@ -396,6 +396,7 @@ type SubscribeArgs<T extends Opts, E extends EventPaths<T["schema"]>> = {
 type RealtimeChannel<T extends Opts> = {
   /**
    * @see node_modules/@upstash/realtime/docs/sdk/features/server-side.mdx
+   * @see node_modules/@upstash/realtime/docs/server-side-cursor-resumption.md
    */
   subscribe: <E extends EventPaths<T["schema"]>>(
     args: SubscribeArgs<T, E>
