@@ -77,8 +77,11 @@ export function RealtimeProvider({
       connectTimeoutRef.current = null
     }
 
-    reconnectAttemptsRef.current = 0
-
+    // The reconnect attempt counter is deliberately left alone here: connect()
+    // runs cleanup() before every attempt, including the retries scheduled by
+    // onerror, so resetting it here would make maxReconnectAttempts
+    // unreachable. It is reset when a connection opens, when a subscriber is
+    // added, and when the last subscriber leaves.
     setStatus("disconnected")
   }
 
@@ -234,6 +237,8 @@ export function RealtimeProvider({
     cb: (msg: RealtimeMessage) => void
   ) => {
     localSubsRef.current.set(id, { channels: new Set(channels), cb })
+    // A new subscriber starts a fresh reconnect budget.
+    reconnectAttemptsRef.current = 0
     debouncedConnect()
   }
 
@@ -247,6 +252,7 @@ export function RealtimeProvider({
     localSubsRef.current.delete(id)
 
     if (localSubsRef.current.size === 0) {
+      reconnectAttemptsRef.current = 0
       cleanup()
 
       if (debounceTimeoutRef.current) {
