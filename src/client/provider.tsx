@@ -31,6 +31,9 @@ export interface RealtimeProviderProps {
   maxReconnectAttempts?: number
 }
 
+/**
+ * @see node_modules/@upstash/realtime/docs/sdk/features/client-side.mdx
+ */
 export function RealtimeProvider({
   children,
   api = { url: "/api/realtime", withCredentials: false },
@@ -275,6 +278,9 @@ export function useRealtimeContext() {
   return context
 }
 
+/**
+ * @see node_modules/@upstash/realtime/docs/sdk/features/client-side.mdx
+ */
 export const createRealtime = <T extends Record<string, any>>() => ({
   useRealtime: <const E extends EventPaths<T>>(opts: UseRealtimeOpts<T, E>) =>
     useRealtime(opts),

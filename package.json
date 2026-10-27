@@ -12,6 +12,7 @@
     "@types/node": "^24.6.0",
     "@types/react": "^19.1.16",
     "@types/react-dom": "^19.1.9",
+    "giget": "3.3.1",
     "tsup": "^8.5.0",
     "typescript": "^5.9.2",
     "zod": "^4.1.11"
@@ -55,7 +56,15 @@
   "access": "public",
   "description": "An HTTP-based realtime client powered by Redis Streams.",
   "files": [
-    "dist"
+    "dist",
+    "src",
+    "docs",
+    "!src/**/*.test.*",
+    "!src/**/*.test-d.*",
+    "!src/**/*.spec.*",
+    "!src/**/test-utils.*",
+    "!src/**/__tests__/**",
+    "!src/**/__snapshots__/**"
   ],
   "homepage": "https://github.com/upstash/realtime",
   "keywords": [
@@ -67,8 +76,12 @@
   "scripts": {
     "build": "tsup",
     "lint": "tsc",
-    "test": "bun test"
+    "test": "bun test",
+    "prepack": "giget gh:upstash/docs/realtime docs/sdk --force-clean 1>&2"
   },
   "type": "module",
-  "types": "dist/server/index.d.ts"
+  "types": "dist/server/index.d.ts",
+  "directories": {
+    "doc": "./docs"
+  }
 }

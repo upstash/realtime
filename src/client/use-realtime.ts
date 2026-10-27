@@ -13,6 +13,9 @@ export interface UseRealtimeOpts<T extends Record<string, any>, E extends string
   enabled?: boolean
 }
 
+/**
+ * @see node_modules/@upstash/realtime/docs/sdk/features/client-side.mdx
+ */
 export function useRealtime<T extends Record<string, any>, const E extends EventPaths<T>>(
   opts: UseRealtimeOpts<T, E>
 ) {

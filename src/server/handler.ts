@@ -7,6 +7,9 @@ import {
 } from "../shared/types.js"
 import { compareStreamIds } from "./utils.js"
 
+/**
+ * @see node_modules/@upstash/realtime/docs/sdk/features/middleware.mdx
+ */
 export function handle<T extends Opts>(config: {
   realtime: Realtime<T>
   middleware?: ({

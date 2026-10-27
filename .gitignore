@@ -1,2 +1,5 @@
 node_modules
 dist
+
+# Documentation fetched during packing
+/docs/sdk/

@@ -18,6 +18,10 @@ The easiest way to add realtime features to any Next.js project.
 
 ---
 
+## Docs
+
+The npm package includes TypeScript source in `node_modules/@upstash/realtime/src/` and documentation in `node_modules/@upstash/realtime/docs/sdk/`. Start with `src/server/index.ts` to explore the source.
+
 ## Quickstart
 
 Upstash Realtime quickstart, documentation & code examples 👇
