@@ -1,11 +1,17 @@
 import type { Opts, Realtime } from "./realtime.js"
 import {
+  STREAM_ID_PATTERN,
   userEvent,
-  systemEvent,
   type SystemEvent,
   type UserEvent,
 } from "../shared/types.js"
-import { compareStreamIds } from "./utils.js"
+import {
+  encodeFrame,
+  getChannelHub,
+  type ChannelMembership,
+  type ChannelMessage,
+} from "./hub.js"
+import { canDeliverLive, streamOrder } from "./utils.js"
 
 /**
  * @see node_modules/@upstash/realtime/docs/sdk/features/middleware.mdx
@@ -45,41 +51,75 @@ export function handle<T extends Opts>(config: {
       })
     }
 
-    let cleanup: (() => Promise<void>) | undefined
-    let subscriber: ReturnType<typeof redis.subscribe>
-    let subCount: number = 0
-    let reconnectTimeout: NodeJS.Timeout | undefined
-    let keepaliveInterval: NodeJS.Timeout | undefined
-    let isClosed = false
-    let handleAbort: (() => Promise<void>) | undefined
-    let onSubscribe: (() => Promise<void>) | undefined
-    let onError: ((err: Error) => void) | undefined
-    let onUnsubscribe: (() => void) | undefined
-    let onMessage:
-      | (({ message, channel }: { message: unknown; channel: string }) => Promise<void>)
-      | undefined
+    // Channels the SDK cannot subscribe to are served from history only:
+    // missed events are replayed on every connection, but nothing arrives
+    // live.
+    const liveChannels = channels.filter(canDeliverLive)
 
-    const stream = new ReadableStream({
-      async start(controller) {
+    if (liveChannels.length < channels.length) {
+      logger.warn(
+        "⚠️ Channels that cannot be subscribed to are replay-only:",
+        channels.filter((channel) => !liveChannels.includes(channel))
+      )
+    }
+
+    const hub = getChannelHub(redis, logger)
+    let cleanup: (() => void) | undefined
+
+    const stream = new ReadableStream<Uint8Array>({
+      start(controller) {
         if (request.signal.aborted) {
           controller.close()
           return
         }
 
-        cleanup = async () => {
+        let isClosed = false
+        let isHistoryReplayed = false
+        let reconnectTimeout: ReturnType<typeof setTimeout> | undefined
+        let buffer: Extract<ChannelMessage, { type: "user" }>[] = []
+        let memberships: ChannelMembership[] = []
+        // Per channel, the position up to which this client already has
+        // everything: what it acknowledged, then what was replayed to it. A
+        // live copy of such an event can still arrive later, from a shared
+        // subscription that is behind or from an emitter that published out
+        // of order, and must not be delivered again.
+        const deliveredUpTo = new Map<string, string>()
+
+        for (const channel of channels) {
+          const lastAck = searchParams.get(`last_ack_${channel}`)
+          // Only ids Redis assigned. A timestamp comes from the client's
+          // clock and says nothing reliable about stream positions.
+          if (lastAck && STREAM_ID_PATTERN.test(lastAck)) {
+            deliveredUpTo.set(channel, streamOrder(lastAck))
+          }
+        }
+
+        const safeEnqueue = (frame: Uint8Array) => {
+          if (isClosed) return
+
+          try {
+            controller.enqueue(frame)
+          } catch (err) {
+            logger.error("⚠️ Error closing controller:", err)
+          }
+        }
+
+        // A chunk belongs to whoever reads it, so a frame shared between
+        // connections is copied rather than handed out directly.
+        const enqueueShared = (frame: Uint8Array) => safeEnqueue(frame.slice())
+
+        const leaveChannels = () => {
+          for (const membership of memberships) membership.leave()
+          memberships = []
+        }
+
+        cleanup = () => {
           if (isClosed) return
           isClosed = true
 
           clearTimeout(reconnectTimeout)
-          clearInterval(keepaliveInterval)
-
-          if (handleAbort) {
-            request.signal.removeEventListener("abort", handleAbort)
-          }
-
-          await subscriber?.unsubscribe().catch((err) => {
-            logger.error("⚠️ Error closing connection:", err)
-          })
+          request.signal.removeEventListener("abort", handleAbort)
+          leaveChannels()
 
           try {
             if (!request.signal.aborted) controller.close()
@@ -89,74 +129,60 @@ export function handle<T extends Opts>(config: {
           }
         }
 
-        handleAbort = async () => {
-          await cleanup?.()
-        }
+        const handleAbort = () => cleanup?.()
 
         request.signal.addEventListener("abort", handleAbort)
 
-        subscriber = redis.subscribe(channels)
-
-        const safeEnqueue = (data: Uint8Array) => {
-          if (isClosed) return
-
-          try {
-            controller.enqueue(data)
-          } catch (err) {
-            logger.error("⚠️ Error closing controller:", err)
-          }
+        const requestReconnect = (timestamp: number) => {
+          const reconnectEvent: SystemEvent = { type: "reconnect", timestamp }
+          safeEnqueue(encodeFrame(reconnectEvent))
+          cleanup?.()
         }
 
         const elapsedMs = Date.now() - requestStartTime
         const remainingMs = config.realtime._maxDurationSecs * 1000 - elapsedMs
         const streamDurationMs = Math.max(remainingMs - 2000, 1000)
 
-        reconnectTimeout = setTimeout(async () => {
-          const reconnectEvent: SystemEvent = {
-            type: "reconnect",
-            timestamp: Date.now(),
+        reconnectTimeout = setTimeout(() => requestReconnect(Date.now()), streamDurationMs)
+
+        const wasDelivered = ({ event, order }: Extract<ChannelMessage, { type: "user" }>) => {
+          const position = deliveredUpTo.get(event.channel)
+          return position !== undefined && order <= position
+        }
+
+        const replayHistory = async () => {
+          if (isClosed) return
+
+          for (const channel of channels) {
+            const connectedEvent: SystemEvent = { type: "connected", channel }
+            safeEnqueue(encodeFrame(connectedEvent))
           }
 
-          safeEnqueue(json(reconnectEvent))
+          const pipeline = redis.pipeline()
 
-          await cleanup?.()
-        }, streamDurationMs)
+          for (const channel of channels) {
+            const lastAck = searchParams.get(`last_ack_${channel}`) ?? String(Date.now())
+            pipeline.xrange(channel, `(${lastAck}`, "+")
+          }
 
-        let buffer: UserEvent[] = []
-        let isHistoryReplayed = false
-        const lastHistoryIds = new Map<string, string>()
+          const histories = await pipeline.exec<Record<string, Record<string, unknown>>[]>()
 
-        onSubscribe = async () => {
-          await Promise.all(
-            channels.map(async (channel) => {
-              const connectedEvent: SystemEvent = {
-                type: "connected",
-                channel,
-              }
+          histories.forEach((missingMessages, index) => {
+            const channel = channels[index]
+            const entries = Object.entries(missingMessages)
+            const lastEntry = entries[entries.length - 1]
+            if (!channel || !lastEntry) return
 
-              safeEnqueue(json(connectedEvent))
+            for (const [id, value] of entries) {
+              const event = userEvent.safeParse({ ...value, id })
+              if (event.success) safeEnqueue(encodeFrame(event.data))
+            }
 
-              const lastAck =
-                searchParams.get(`last_ack_${channel}`) ?? String(Date.now())
+            deliveredUpTo.set(channel, streamOrder(lastEntry[0]))
+          })
 
-              const missingMessages = await redis.xrange(channel, `(${lastAck}`, "+")
-
-              const entries = Object.entries(missingMessages)
-              if (entries.length > 0) {
-                entries.forEach(([id, value]) => {
-                  const eventWithId = { ...value, id }
-                  const event = userEvent.safeParse(eventWithId)
-                  if (event.success) safeEnqueue(json(event.data))
-                })
-                lastHistoryIds.set(channel, entries[entries.length - 1]?.[0] ?? "")
-              }
-            })
-          )
-
-          for (const msg of buffer) {
-            const channelLastId = lastHistoryIds.get(msg.channel)
-            if (channelLastId && compareStreamIds(msg.id, channelLastId) <= 0) continue
-            safeEnqueue(json(msg))
+          for (const message of buffer) {
+            if (!wasDelivered(message)) enqueueShared(message.frame)
           }
 
           buffer = []
@@ -165,80 +191,75 @@ export function handle<T extends Opts>(config: {
           logger.log("✅ Subscription established:", { channels })
         }
 
-        onError = (err) => {
-          logger.error("⚠️ Redis subscriber error:", err)
-
-          const errorEvent: SystemEvent = {
-            type: "error",
-            error: err.message,
-          }
-
-          safeEnqueue(json(errorEvent))
+        // Nothing more can be delivered on this connection. It stays open and
+        // silent, so the client's ping timeout makes it reconnect and retry
+        // from its last acknowledged event. Closing it instead would have the
+        // browser retry every few seconds for as long as the failure lasts.
+        const abandon = () => {
+          leaveChannels()
+          buffer = []
         }
 
-        onUnsubscribe = async () => {
-          logger.log("⬅️ Client unsubscribed from channels:", channels)
+        const listener = {
+          onMessage: (message: ChannelMessage) => {
+            if (message.type === "user") {
+              if (!isHistoryReplayed) {
+                buffer.push(message)
+                return
+              }
 
-          await cleanup?.()
-        }
-
-        onMessage = async ({ message }) => {
-          let payload: Record<string, unknown>
-
-          if (typeof message === "string") {
-            try {
-              payload = JSON.parse(message)
-            } catch {
-              payload = { data: message }
+              if (deliveredUpTo.size > 0 && wasDelivered(message)) return
             }
-          } else if (typeof message === "object" && message !== null) {
-            payload = message as Record<string, unknown>
-          } else {
-            payload = { data: message }
-          }
 
-          const systemResult = systemEvent.safeParse(payload)
-
-          if (systemResult.success) {
-            safeEnqueue(json(systemResult.data))
-            return
-          }
-
-          logger.log("⬇️  Received event:", payload)
-
-          const result = userEvent.safeParse(payload)
-
-          if (result.success) {
-            if (!isHistoryReplayed) {
-              buffer.push(result.data)
-            } else {
-              safeEnqueue(json(result.data))
-            }
-          }
+            enqueueShared(message.frame)
+          },
+          // The shared subscription was lost. Have the client resume from its
+          // last acknowledged event on a fresh connection. For a channel it
+          // has no acknowledgement for, it resumes from the given time: when
+          // the subscription last worked, but not from before this connection
+          // existed, since the subscription may have been lost before that.
+          onClose: (aliveAt: number) => requestReconnect(Math.max(aliveAt, requestStartTime)),
         }
 
-        subscriber.on("subscribe", () => {
-          subCount = subCount + 1
-          if (subCount === channels.length) onSubscribe?.()
-        })
-        subscriber.on("error", onError)
-        subscriber.on("unsubscribe", onUnsubscribe)
-        subscriber.on("message", onMessage)
-
-        keepaliveInterval = setInterval(async () => {
-          const channel = channels[0]
-          if (channel) {
-            await redis.publish(channel, {
-              type: "ping",
-              timestamp: Date.now(),
-            })
+        try {
+          for (const [index, channel] of liveChannels.entries()) {
+            // The first channel is the one whose pings keep this client's
+            // connection from timing out.
+            memberships.push(hub.join(channel, listener, { isHeartbeat: index === 0 }))
           }
-        }, 60_000)
+        } catch (err) {
+          // Leave whatever was joined before the failure.
+          cleanup()
+          throw err
+        }
+
+        Promise.all(memberships.map((membership) => membership.ready)).then(
+          () =>
+            replayHistory().catch((err) => {
+              // The details stay in the server log.
+              logger.error("⚠️ Error replaying history:", err)
+
+              const errorEvent: SystemEvent = {
+                type: "error",
+                error: "Failed to replay missed events.",
+              }
+
+              safeEnqueue(encodeFrame(errorEvent))
+              abandon()
+            }),
+          (err) => {
+            logger.error("⚠️ Error subscribing:", err)
+
+            const errorEvent: SystemEvent = { type: "error", error: "Failed to subscribe." }
+
+            safeEnqueue(encodeFrame(errorEvent))
+            abandon()
+          }
+        )
       },
 
-      async cancel() {
-        if (isClosed) return
-        await cleanup?.()
+      cancel() {
+        cleanup?.()
       },
     })
 
@@ -247,7 +268,7 @@ export function handle<T extends Opts>(config: {
 }
 
 export function json(data: SystemEvent | UserEvent) {
-  return new TextEncoder().encode(`data: ${JSON.stringify(data)}\n\n`)
+  return encodeFrame(data)
 }
 
 export class StreamingResponse extends Response {
@@ -266,5 +287,3 @@ export class StreamingResponse extends Response {
     })
   }
 }
-
-
