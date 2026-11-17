@@ -145,6 +145,27 @@ test("deduplicates live events that arrive after replay completes", async () => 
   expect(received).toEqual([withCursor(historyEvent), withCursor(freshEvent)])
 })
 
+test("ignores events published on a different channel", async () => {
+  const liveEvent = {
+    id: "3-0",
+    event: "update",
+    channel: "updates",
+    data: { value: "live" },
+  }
+  const { subscriber, subscribe, received } = setup({
+    historyEvents: [],
+    subscribeOptions: {},
+  })
+
+  subscriber.emit("subscribe", 1)
+  const unsubscribe = await subscribe
+  subscriber.emit("message", { channel: "other", message: { ...liveEvent, id: "2-0" } })
+  subscriber.emit("message", { channel: "updates", message: liveEvent })
+  unsubscribe()
+
+  expect(received).toEqual([withCursor(liveEvent)])
+})
+
 test("resumes exclusively after a retained cursor", async () => {
   const events = [
     {
@@ -360,14 +381,34 @@ test("ignores live events with an invalid stream id", async () => {
   expect(received).toEqual([withCursor(historyEvent), withCursor(liveEvent)])
 })
 
-test("does not start the ping interval when unsubscribed during replay", async () => {
-  const intervals = []
-  const originalSetInterval = globalThis.setInterval
-  globalThis.setInterval = (handler, timeout, ...args) => {
-    const handle = originalSetInterval(handler, timeout, ...args)
-    intervals.push(handle)
+// Keepalive timers are the only long timers a subscription creates.
+function trackKeepaliveTimers() {
+  const active = new Set()
+  const originalSetTimeout = globalThis.setTimeout
+  const originalClearTimeout = globalThis.clearTimeout
+
+  globalThis.setTimeout = (handler, timeout, ...args) => {
+    const handle = originalSetTimeout(handler, timeout, ...args)
+    if (timeout >= 1000) active.add(handle)
     return handle
   }
+  globalThis.clearTimeout = (handle) => {
+    active.delete(handle)
+    return originalClearTimeout(handle)
+  }
+
+  return {
+    active,
+    restore() {
+      globalThis.setTimeout = originalSetTimeout
+      globalThis.clearTimeout = originalClearTimeout
+      for (const handle of active) originalClearTimeout(handle)
+    },
+  }
+}
+
+test("does not start the keepalive when unsubscribed during replay", async () => {
+  const timers = trackKeepaliveTimers()
 
   try {
     const { subscriber, snapshotCaptured, releaseHistory, subscribe } = setup({
@@ -382,9 +423,57 @@ test("does not start the ping interval when unsubscribed during replay", async (
     releaseHistory.resolve()
     await subscribe
 
-    expect(intervals).toHaveLength(0)
+    expect(timers.active.size).toBe(0)
   } finally {
-    globalThis.setInterval = originalSetInterval
-    for (const handle of intervals) clearInterval(handle)
+    timers.restore()
   }
+})
+
+test("stops the keepalive when the caller unsubscribes", async () => {
+  const timers = trackKeepaliveTimers()
+
+  try {
+    const { subscriber, releaseHistory, subscribe } = setup({ historyEvents: [] })
+    // The SDK subscriber aborts its stream on unsubscribe without emitting.
+    subscriber.unsubscribe = async () => {}
+
+    subscriber.emit("subscribe", 1)
+    releaseHistory.resolve()
+    const unsubscribe = await subscribe
+
+    expect(timers.active.size).toBe(1)
+
+    unsubscribe()
+
+    expect(timers.active.size).toBe(0)
+  } finally {
+    timers.restore()
+  }
+})
+
+test("refuses to subscribe to a channel name the Redis SDK cannot subscribe to", async () => {
+  let subscribeCalls = 0
+  const realtime = new Realtime({
+    redis: {
+      subscribe() {
+        subscribeCalls += 1
+        return new FakeSubscriber()
+      },
+    },
+  })
+
+  for (const name of ["a/b", "a?b", "a#b", "50%", "..", ""]) {
+    const error = await realtime
+      .channel(name)
+      .subscribe({ events: ["update"], onData() {} })
+      .then(
+        () => new Error("Expected the subscription to reject"),
+        (cause) => cause
+      )
+
+    expect(error).toBeInstanceOf(TypeError)
+    expect(error.message).toContain("Cannot subscribe to channel")
+  }
+
+  expect(subscribeCalls).toBe(0)
 })

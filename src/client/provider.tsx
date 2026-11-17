@@ -25,6 +25,12 @@ export const RealtimeContext = createContext<RealtimeContextValue | null>(null)
 
 const PING_TIMEOUT_MS = 75_000
 
+// How many delivered event ids are remembered per channel to recognise a
+// replay of something the hooks already received.
+const MAX_REMEMBERED_IDS = 1000
+
+const channelsKey = (channels: Iterable<string>) => JSON.stringify([...channels].sort())
+
 export interface RealtimeProviderProps {
   children: React.ReactNode
   api?: { url?: string; withCredentials?: boolean }
@@ -46,10 +52,12 @@ export function RealtimeProvider({
   >(new Map())
 
   const eventSourceRef = useRef<EventSource | null>(null)
+  const connectedChannelsRef = useRef<string | null>(null)
   const reconnectTimeoutRef = useRef<NodeJS.Timeout | null>(null)
   const pingTimeoutRef = useRef<NodeJS.Timeout | null>(null)
   const reconnectAttemptsRef = useRef(0)
   const lastAckRef = useRef<Map<string, string>>(new Map())
+  const deliveredRef = useRef<Map<string, Set<string>>>(new Map())
   const lastReplaySinceRef = useRef<number | null>(null)
   const connectTimeoutRef = useRef<NodeJS.Timeout | null>(null)
   const debounceTimeoutRef = useRef<NodeJS.Timeout | null>(null)
@@ -67,6 +75,7 @@ export function RealtimeProvider({
       eventSourceRef.current.close()
       eventSourceRef.current = null
     }
+    connectedChannelsRef.current = null
     if (reconnectTimeoutRef.current) {
       clearTimeout(reconnectTimeoutRef.current)
       reconnectTimeoutRef.current = null
@@ -137,6 +146,7 @@ export function RealtimeProvider({
         withCredentials: api.withCredentials ?? false,
       })
       eventSourceRef.current = eventSource
+      connectedChannelsRef.current = channelsKey(channels)
 
       eventSource.onopen = () => {
         reconnectAttemptsRef.current = 0
@@ -195,8 +205,17 @@ export function RealtimeProvider({
     }
 
     debounceTimeoutRef.current = setTimeout(() => {
-      connect()
       debounceTimeoutRef.current = null
+
+      // A hook mounting or unmounting only needs a new connection when it
+      // changes which channels are needed.
+      const eventSource = eventSourceRef.current
+      const isCurrent =
+        eventSource !== null &&
+        eventSource.readyState !== EventSource.CLOSED &&
+        connectedChannelsRef.current === channelsKey(getAllNeededChannels())
+
+      if (!isCurrent) connect()
     }, 25)
   }, [connect])
 
@@ -217,7 +236,26 @@ export function RealtimeProvider({
     const event = userEvent.safeParse(payload)
 
     if (event.success) {
-      lastAckRef.current.set(event.data.channel, event.data.id)
+      const { channel, id } = event.data
+
+      // A connection lives longer now that hooks mounting and unmounting no
+      // longer replace it. When the browser re-opens it by itself it reuses
+      // the original URL, and the server replays from that older position.
+      // Events the hooks already received are dropped here.
+      let delivered = deliveredRef.current.get(channel)
+      if (!delivered) {
+        delivered = new Set()
+        deliveredRef.current.set(channel, delivered)
+      }
+      if (delivered.has(id)) return
+
+      delivered.add(id)
+      if (delivered.size > MAX_REMEMBERED_IDS) {
+        const oldest = delivered.values().next().value
+        if (oldest !== undefined) delivered.delete(oldest)
+      }
+
+      lastAckRef.current.set(channel, id)
 
       localSubsRef.current.forEach((sub) => {
         if (sub.channels.has(event.data.channel)) {
@@ -243,11 +281,18 @@ export function RealtimeProvider({
   const unregister = (id: string) => {
     const channels = Array.from(localSubsRef.current.get(id)?.channels ?? [])
 
-    channels.forEach((channel) => {
-      lastAckRef.current.delete(channel)
-    })
-
     localSubsRef.current.delete(id)
+
+    // Another hook may still be listening on the channel. Its position has to
+    // survive, or the next reconnect would replay events it already received.
+    const neededChannels = getAllNeededChannels()
+
+    channels.forEach((channel) => {
+      if (neededChannels.has(channel)) return
+
+      lastAckRef.current.delete(channel)
+      deliveredRef.current.delete(channel)
+    })
 
     if (localSubsRef.current.size === 0) {
       cleanup()

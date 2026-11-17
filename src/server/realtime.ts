@@ -9,9 +9,21 @@ import {
   userEvent,
   type UserEvent
 } from "../shared/types.js"
-import { compareStreamIds } from "./utils.js"
+import { startKeepalive, type Keepalive } from "./keepalive.js"
+import { EMIT_SCRIPT, EMIT_SCRIPT_SHA, isMissingScriptError } from "./scripts.js"
+import { compareStreamIds, InvalidChannelError, isSubscribableChannel } from "./utils.js"
 
 const DEFAULT_VERCEL_FLUID_TIMEOUT = 300
+
+/**
+ * The longest event that can be published, in characters of its JSON form
+ * together with the channel name.
+ *
+ * The Redis SDK reads a subscription line by line and stops reading at a line
+ * longer than 1 MB. One event above that would end the subscription of
+ * everyone listening on the channel, so it is refused before it is sent.
+ */
+const MAX_EVENT_LENGTH = 1_000_000
 
 type Schema = Record<string, z.$ZodType | Record<string, any>>
 
@@ -63,8 +75,6 @@ class RealtimeBase<T extends Opts> {
     maxLength?: number
     expireAfterSecs?: number
   }
-  private _trimConfig?: NonNullable<Parameters<Redis["xadd"]>[3]>["trim"]
-
   /** @internal */
   public readonly _redis?: Redis | undefined
 
@@ -92,31 +102,12 @@ class RealtimeBase<T extends Opts> {
     this._verbose = data.verbose ?? false
     this._history = typeof data.history === "boolean" ? {} : data.history ?? {}
 
-    this._trimConfig = this._history.maxLength
-      ? {
-          type: "MAXLEN",
-          threshold: this._history.maxLength,
-          comparison: "=",
-        }
-      : undefined
-
     Object.assign(this, this.createEventHandlers("default"))
   }
 
   private createEventHandlers(channel: string): any {
     const handlers: any = {}
     let unsubscribe: undefined | (() => void) = undefined
-    let pingInterval: undefined | NodeJS.Timeout = undefined
-
-    const startPingInterval = () => {
-      pingInterval = setInterval(() => {
-        this._redis?.publish(channel, { type: "ping", timestamp: Date.now() })
-      }, 60_000)
-    }
-
-    const stopPingInterval = () => {
-      if (pingInterval) clearInterval(pingInterval)
-    }
 
     handlers.history = async (args?: HistoryArgs) => {
       const redis = this._redis
@@ -163,11 +154,13 @@ class RealtimeBase<T extends Opts> {
 
       const redis = this._redis
       if (!redis) throw new Error("Redis not configured.")
+      if (!isSubscribableChannel(channel)) throw new InvalidChannelError(channel)
 
       const buffer: UserEvent[] = []
       let isHistoryReplayed = false
       let isUnsubscribed = false
       let lastHistoryId: string | null = after ?? null
+      let keepalive: Keepalive | undefined
 
       const deliver = (message: UserEvent) => {
         onData({ ...message, cursor: message.id })
@@ -178,7 +171,12 @@ class RealtimeBase<T extends Opts> {
       // Register listeners before replaying history so events that arrive
       // after the XRANGE snapshot are buffered until the historical entries
       // have been delivered, and an unsubscribe during replay is not missed.
-      sub.on("message", ({ message }) => {
+      sub.on("message", ({ channel: source, message }) => {
+        // Only what was published on this channel.
+        if (source !== channel) return
+
+        keepalive?.touch()
+
         if (!message.event || !events.includes(message.event)) return
 
         const result = userEvent.safeParse(message)
@@ -201,8 +199,16 @@ class RealtimeBase<T extends Opts> {
 
       sub.on("unsubscribe", () => {
         isUnsubscribed = true
-        stopPingInterval()
+        keepalive?.stop()
       })
+
+      // The SDK does not emit "unsubscribe" when the caller unsubscribes, so
+      // the keepalive has to be stopped here or it would ping forever.
+      const close = () => {
+        isUnsubscribed = true
+        keepalive?.stop()
+        return sub.unsubscribe()
+      }
 
       await new Promise<void>((resolve, reject) => {
         sub.on("subscribe", async () => {
@@ -247,9 +253,13 @@ class RealtimeBase<T extends Opts> {
 
             buffer.length = 0
             isHistoryReplayed = true
-            // An unsubscribe that fired during replay already ran
-            // stopPingInterval; starting the interval now would leak it.
-            if (!isUnsubscribed) startPingInterval()
+            // An unsubscribe that fired during replay has nothing to stop
+            // yet; starting the keepalive now would leak it.
+            if (!isUnsubscribed) {
+              keepalive = startKeepalive({
+                ping: () => redis.publish(channel, { type: "ping", timestamp: Date.now() }),
+              })
+            }
             resolve()
           } catch (error) {
             if (!isUnsubscribed) {
@@ -264,8 +274,8 @@ class RealtimeBase<T extends Opts> {
         })
       })
 
-      unsubscribe = () => sub.unsubscribe()
-      return () => sub.unsubscribe()
+      unsubscribe = close
+      return close
     }
 
     const findSchema = (path: string[]): z.$ZodType | undefined => {
@@ -292,33 +302,38 @@ class RealtimeBase<T extends Opts> {
         return
       }
 
-      const id = realtimeCursor.parse(
-        await this._redis.xadd(
-          channel,
-          "*",
-          { data, event, channel },
-          {
-            ...(this._trimConfig && { trim: this._trimConfig }),
-          }
-        )
-      )
-
-      const payload: UserEvent = {
-        data,
+      // Objects are stored in the stream as the same JSON the publish payload
+      // carries, so the script reuses that argument instead of receiving the
+      // data twice. Other values are stored as-is and need their own JSON form.
+      const json = typeof data === "object" ? JSON.stringify(data) : undefined
+      const isShared = typeof json === "string"
+      const keys = [channel]
+      const args = [
+        isShared ? json : data,
         event,
-        channel,
-        id,
+        isShared
+          ? `,"event":${JSON.stringify(event)},"channel":${JSON.stringify(channel)},"id":"`
+          : `${JSON.stringify({ data, event, channel }).slice(0, -1)},"id":"`,
+        this._history.maxLength ? String(this._history.maxLength) : "",
+        this._history.expireAfterSecs ? String(this._history.expireAfterSecs) : "",
+        isShared ? "1" : "",
+      ]
+
+      const length = channel.length + String(args[2]).length + (isShared ? json.length : 0)
+
+      if (length > MAX_EVENT_LENGTH) {
+        throw new RangeError(
+          `Event "${event}" is too large to publish: it is ${length} characters long and the limit is ${MAX_EVENT_LENGTH}.`
+        )
       }
 
-      const pipeline = this._redis.pipeline()
-
-      if (this._history.expireAfterSecs) {
-        pipeline.expire(channel, this._history.expireAfterSecs)
-      }
-
-      pipeline.publish(channel, payload)
-
-      await pipeline.exec()
+      const redis = this._redis
+      const id = realtimeCursor.parse(
+        await redis.evalsha(EMIT_SCRIPT_SHA, keys, args).catch((error) => {
+          if (isMissingScriptError(error)) return redis.eval(EMIT_SCRIPT, keys, args)
+          throw error
+        })
+      )
 
       this._logger.log(`⬆️  Emitted event:`, {
         id,
